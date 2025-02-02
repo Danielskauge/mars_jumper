@@ -1,0 +1,3 @@
+[submodule "submodules/cad"]
+	path = submodules/cad
+	url = git@github.com:Aemperior/prosjektoppgave_CAD.git

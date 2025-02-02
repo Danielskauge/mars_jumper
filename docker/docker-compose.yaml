@@ -10,7 +10,7 @@ x-default-isaac-lab-template-deploy: &default-isaac-lab-template-deploy
           capabilities: [ gpu ]
 
 services:
-  isaac-lab-template:
+  mars-jumper:
     env_file: .env.base
     build:
       context: ../
@@ -18,8 +18,8 @@ services:
       args:
         - ISAACLAB_BASE_IMAGE_ARG=${ISAACLAB_BASE_IMAGE}
         - DOCKER_ISAACLAB_EXTENSION_TEMPLATE_PATH_ARG=${DOCKER_ISAACLAB_EXTENSION_TEMPLATE_PATH}
-    image: isaac-lab-template
-    container_name: isaac-lab-template
+    image: mars-jumper
+    container_name: mars-jumper
     volumes:
       - type: bind
         source: ../
