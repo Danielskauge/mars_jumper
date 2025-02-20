@@ -5,9 +5,9 @@ from .jump_env import JumpEnv
 from .jump_env_config import JumpEnvCfg
 
 gym.register(
-    id="MarsJumper",
+    id="mars-jumper",
     entry_point="envs.jump:JumpEnv",
-    disable_env_checker=False,
+    disable_env_checker=True,
     kwargs={
         "env_cfg_entry_point": JumpEnvCfg,
         "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_cfg.yaml",

@@ -1,6 +1,6 @@
 from typing import Tuple, Dict, List
 from dataclasses import MISSING
-from omni.isaac.lab.utils.configclass import configclass
+from isaaclab.utils import configclass
 
 
 @configclass

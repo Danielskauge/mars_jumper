@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import torch
 
-from omni.isaac.core.utils.types import ArticulationActions
+from isaaclab.utils.types import ArticulationActions
 
-from omni.isaac.lab.actuators import IdealPDActuator
-from omni.isaac.lab.actuators import IdealPDActuatorCfg
+from isaaclab.actuators import IdealPDActuator
+from isaaclab.actuators import IdealPDActuatorCfg
 
 from dataclasses import MISSING
-from omni.isaac.lab.utils import configclass
+from isaaclab.utils import configclass
 
 
 class MotorModel(IdealPDActuator):

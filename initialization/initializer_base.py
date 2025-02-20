@@ -4,8 +4,8 @@ from abc import abstractmethod, ABC
 from typing_extensions import override
 import torch
 from torch.nn.functional import normalize
-from omni.isaac.lab.assets.articulation import Articulation
-from omni.isaac.lab.utils.math import (
+from isaaclab.assets.articulation import Articulation
+from isaaclab.utils.math import (
     quat_from_euler_xyz,
     quat_rotate,
     random_orientation,
@@ -30,8 +30,8 @@ class InitializerBase(ABC):
         self._num_envs = robot_articulation.num_instances
         self._device = robot_articulation.device
         self._default_base_state = robot_articulation.data.default_root_state[0]
-        self._default_joint_positions = robot_articulation.data.default_joint_pos[0]
-        self._default_joint_velocities = robot_articulation.data.default_joint_vel[0]
+        self._default_joint_pos = robot_articulation.data.default_joint_pos[0]
+        self._default_joint_vel = robot_articulation.data.default_joint_vel[0]
         self._num_states = 13 + 2 * robot_articulation.num_joints
         self._state_stack: Stack = None
 
@@ -53,7 +53,7 @@ class InitializerBase(ABC):
             A tensor containing the initial states for the environments.
         """
         if self._state_stack is None:
-            self._state_stack = self.create_state_stack()
+            self._state_stack = self._create_state_stack()
         return self._state_stack.pop(num_envs)
 
     @staticmethod
@@ -126,7 +126,7 @@ class JumpInitializerBase(InitializerBase):
             A tuple containing commands and states for the environments.
         """
         if self._state_stack is None:
-            self._state_stack = self.create_state_stack()
+            self._state_stack = self._create_state_stack()
         return torch.split(
             self._state_stack.pop(num_envs), [self._command_dim, self._num_states], dim=1
         )

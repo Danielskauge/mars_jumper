@@ -1,6 +1,6 @@
 from typing_extensions import override
 import torch
-from omni.isaac.lab.assets.articulation import Articulation
+from isaaclab.assets.articulation import Articulation
 from utilities import Stack
 from .configs import CommandCfg
 from .initializer_base import JumpInitializerBase
@@ -15,17 +15,17 @@ class DefaultInitializer(JumpInitializerBase):
 
     def __init__(
         self,
-        robot_articulation: Articulation,
+        robot: Articulation,
         command_cfg: CommandCfg,
     ):
         """
         Initializes the DefaultInitializer with the given robot articulation and command configuration.
 
         Args:
-            robot_articulation: The robot articulation containing environment data.
+            robot: The robot articulation containing environment data.
             command_cfg: Configuration for command generation.
         """
-        super().__init__(robot_articulation, None, command_cfg)
+        super().__init__(robot, None, command_cfg)
 
     @override
     def _create_state_stack(self) -> Stack:

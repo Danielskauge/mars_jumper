@@ -1,7 +1,7 @@
-x-default-isaac-lab-template-environment: &default-isaac-lab-template-environment
+x-default-mars-jumper-environment: &default-mars-jumper-environment
   - OMNI_KIT_ALLOW_ROOT=1
 
-x-default-isaac-lab-template-deploy: &default-isaac-lab-template-deploy
+x-default-mars-jumper-deploy: &default-mars-jumper-deploy
   resources:
     reservations:
       devices:
@@ -17,16 +17,16 @@ services:
       dockerfile: docker/Dockerfile
       args:
         - ISAACLAB_BASE_IMAGE_ARG=${ISAACLAB_BASE_IMAGE}
-        - DOCKER_ISAACLAB_EXTENSION_TEMPLATE_PATH_ARG=${DOCKER_ISAACLAB_EXTENSION_TEMPLATE_PATH}
+        - DOCKER_MARS_JUMPER_PATH_ARG=${DOCKER_MARS_JUMPER_PATH}
     image: mars-jumper
     container_name: mars-jumper
     volumes:
       - type: bind
         source: ../
-        target: ${DOCKER_ISAACLAB_EXTENSION_TEMPLATE_PATH}
+        target: ${DOCKER_MARS_JUMPER_PATH}
     network_mode: host
-    environment: *default-isaac-lab-template-environment
-    deploy: *default-isaac-lab-template-deploy
+    environment: *default-mars-jumper-environment
+    deploy: *default-mars-jumper-deploy
     # This is the entrypoint for the container
     entrypoint: bash
     stdin_open: true
