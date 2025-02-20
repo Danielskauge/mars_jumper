@@ -18,8 +18,9 @@ services:
       args:
         - ISAACLAB_BASE_IMAGE_ARG=${ISAACLAB_BASE_IMAGE}
         - DOCKER_MARS_JUMPER_PATH_ARG=${DOCKER_MARS_JUMPER_PATH}
-    image: mars-jumper
-    container_name: mars-jumper
+        - SUFFIX=${SUFFIX:?Error, must define SUFFIX, so unique image and container can be created for each user.}
+    image: "mars-jumper-${SUFFIX}"
+    container_name: "mars-jumper-${SUFFIX}"
     volumes:
       - type: bind
         source: ../
