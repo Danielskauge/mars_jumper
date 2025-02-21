@@ -11,46 +11,6 @@ DEG2RAD = torch.pi / 180.0
 RPM2RADPS = 2.0 * torch.pi / 60.0
 
 
-class MarsJumperRobot(Articulation):
-    """Mars Jumper Robot class."""
-
-    def __init__(self, cfg):
-        super().__init__(cfg)
-        
-    def print_usd_info(self):
-        """Print information about the USD stage and prims."""
-        print("\n=== USD Stage Information ===")
-        print(f"Stage root path: {self.cfg.prim_path}")
-        
-        print("\n=== Joint Information ===")
-        print(f"Number of joints: {self.num_joints}")
-        print(f"Joint names: {self.joint_names}")
-        
-        print("\n=== Body Information ===")
-        print(f"Number of bodies: {self.num_bodies}")
-        print(f"Body names: {self.body_names}")
-        
-        print("\n=== Fixed Tendon Information ===")
-        print(f"Number of fixed tendons: {self.num_fixed_tendons}")
-        
-    def clip_position_commands_to_joint_limits(self, position_commands: torch.Tensor,
-                                               hip_abduction_joints_idx: List[int],
-                                               knee_joints_idx: List[int],
-                                               hip_flexion_joints_idx: List[int],
-                                               ) -> torch.Tensor:
-        hip_abduction_commands = torch.clip(position_commands[:, hip_abduction_joints_idx], 
-                          self.cfg.HIP_ABDUCTION_ANGLE_LIMITS_RAD[0], 
-                          self.cfg.HIP_ABDUCTION_ANGLE_LIMITS_RAD[1])
-        knee_commands = torch.clip(position_commands[:, knee_joints_idx], 
-                          self.cfg.KNEE_ANGLE_LIMITS_RAD[0], 
-                          self.cfg.KNEE_ANGLE_LIMITS_RAD[1])
-        hip_flexion_commands = torch.clip(position_commands[:, hip_flexion_joints_idx], 
-                          self.cfg.HIP_FLEXION_ANGLE_LIMITS_RAD[0], 
-                          self.cfg.HIP_FLEXION_ANGLE_LIMITS_RAD[1])
-        return torch.cat((hip_abduction_commands, knee_commands, hip_flexion_commands), dim=1)
-    
-    
-
 class MarsJumperRobotConfig(ArticulationCfg):
     """Configuration of mars jumper robot using cube mars motor model."""
     HIP_FLEXION_JOINTS_REGEX: str = ".*_HAA.*"
@@ -156,7 +116,7 @@ class MarsJumperRobotConfig(ArticulationCfg):
         )
         
         super().__init__(
-            prim_path="/World/envs/env_.*/mars_jumper_robot",
+            prim_path="/World/envs/env_.*/robot",
             spawn=spawn,
             init_state=init_state,
             actuators=actuators,

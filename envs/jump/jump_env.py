@@ -2,7 +2,7 @@ from typing import Tuple, List, Dict
 
 import numpy as np
 from isaaclab.utils.math import sample_uniform
-from robot.mars_jumper_robot import MarsJumperRobot
+from mars_jumper.robot.robot_cfg import MarsJumperRobot
 from torch import Tensor
 
 import omni.log

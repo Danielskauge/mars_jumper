@@ -23,7 +23,7 @@ simulation_app = app_launcher.app
 import torch
 import isaaclab.sim as sim_utils
 
-from robot.mars_jumper_robot import MarsJumperRobotConfig, MarsJumperRobot
+from mars_jumper.robot.robot_cfg import MarsJumperRobotConfig, MarsJumperRobot
 
 def design_scene():
     """Designs the scene."""

@@ -11,7 +11,7 @@ from isaaclab.sim import SimulationCfg
 from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.utils import configclass
 from isaaclab.assets.articulation import ArticulationCfg
-from robot.mars_jumper_robot import MarsJumperRobotConfig
+from mars_jumper.robot.robot_cfg import MarsJumperRobotConfig
 from initialization import InitializationScheme
 
 DEG2RAD = torch.pi / 180.0
