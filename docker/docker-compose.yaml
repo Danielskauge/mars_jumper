@@ -24,7 +24,7 @@ services:
       - type: bind
         source: ../
         target: ${DOCKER_MARS_JUMPER_PATH}
-    network_mode: host
+    network_mode: bridge
     environment: *default-mars-jumper-environment
     deploy: *default-mars-jumper-deploy
     # This is the entrypoint for the container
@@ -46,7 +46,8 @@ services:
       - type: bind
         source: ../
         target: ${DOCKER_MARS_JUMPER_PATH}
-    network_mode: host
+    networks:
+      - simnet # This is one you need to make yourself
     environment: *default-mars-jumper-environment
     deploy: *default-mars-jumper-deploy
     # This is the entrypoint for the container
@@ -54,4 +55,7 @@ services:
     stdin_open: true
     tty: true
 
-
+networks: 
+  simnet:
+    name: simnet
+    external: true
