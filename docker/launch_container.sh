@@ -39,9 +39,8 @@ esac
 echo "Launching container: $container_name"
 #echo $MARS_JUMPER_CODE_SRC_PATH
 
-docker run --name "$container_name" --entrypoint bash -it --gpus "$gpu_arg" -e "ACCEPT_EULA=Y" --rm --network=$network \
+docker run --name "$container_name" --entrypoint bash -it --gpus "$gpu_arg" -e "ACCEPT_EULA=Y" --rm --network=host \
         -e "PRIVACY_CONSENT=Y" \
-        -e OMNI_KIT_ALLOW_ROOT=1 \
         -v "${MARS_JUMPER_CODE_SRC_PATH}:${MARS_JUMPER_CODE_DST_PATH}:rw"\
     isaac-lab-base
 
