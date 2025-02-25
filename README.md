@@ -59,4 +59,3 @@ Some critical aspects of its use:
 * a file: `config.yaml`
 
 To successfully load your `.usd` file in the webrtc GUI, your `.usd` file must remain in the same directory as these extra files. This is new, 6 months ago isaaclab had a script of the same name that generated a standalone usd file without the bloat. 
-
