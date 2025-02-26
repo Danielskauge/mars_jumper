@@ -11,7 +11,7 @@ DEG2RAD = torch.pi / 180.0
 RPM2RADPS = 2.0 * torch.pi / 60.0
 
 
-class MarsJumperRobotConfig(ArticulationCfg):
+class MarsJumperRobotCfg(ArticulationCfg):
     """Configuration of mars jumper robot using cube mars motor model."""
     HIP_FLEXION_JOINTS_REGEX: str = ".*_HAA.*"
     HIP_ABDUCTION_JOINTS_REGEX: str = ".*_HFE.*"
@@ -57,20 +57,20 @@ class MarsJumperRobotConfig(ArticulationCfg):
             # "knee_motors": get_AK809_cfg(
             #     joint_names_expr=self.KNEE_JOINTS_REGEX, kp=0.1, kd=0.1
             # ),
-            # "knee_torsional_springs": IdealPDActuatorCfgg(
-            #     joint_names_expr=self.KNEE_JOINTS_REGEX,
-            #     effort_limit=1.0,
-            #     stiffness=1.0, #TODO: Add correct values
-            #     damping=10.0,
-            #     friction=0.1,
-            # ),
-            # "hip_torsional_springs": ImplicitActuatorCfg(
-            #     joint_names_expr=self.HIP_FLEXION_JOINTS_REGEX,
-            #     effort_limit=1.0,
-            #     stiffness=1.0, #TODO: Add correct values
-            #     damping=10.0,
-            #     friction=0.1,
-            # ),
+            "knee_torsional_springs": ImplicitActuatorCfg(
+                joint_names_expr=self.KNEE_JOINTS_REGEX,
+                effort_limit=1.0,
+                stiffness=1.0,
+                damping=10.0,
+                friction=0.1,
+            ),
+            "hip_torsional_springs": ImplicitActuatorCfg(
+                joint_names_expr=self.HIP_FLEXION_JOINTS_REGEX,
+                effort_limit=1.0,
+                stiffness=1.0, #TODO: Add correct values
+                damping=10.0,
+                friction=0.1,
+            ),
             "placeholder_knee_motors": ImplicitActuatorCfg(
                 joint_names_expr=self.KNEE_JOINTS_REGEX,
                 effort_limit=100,
@@ -99,7 +99,7 @@ class MarsJumperRobotConfig(ArticulationCfg):
     
         
         spawn=sim_utils.UsdFileCfg(
-                usd_path=f"{os.getcwd()}/submodules/cad/simplified_robot/simplified_robot.usd",
+                usd_path=f"{os.getcwd()}/USD_files/example_usd/example_USD.usd",
                 activate_contact_sensors=True,
                 rigid_props=sim_utils.RigidBodyPropertiesCfg(
                     disable_gravity=False,
