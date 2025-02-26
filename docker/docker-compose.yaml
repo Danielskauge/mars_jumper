@@ -24,7 +24,7 @@ services:
       - type: bind
         source: ../
         target: ${DOCKER_MARS_JUMPER_PATH}
-    network_mode: bridge
+    network_mode: host
     environment: *default-mars-jumper-environment
     deploy: *default-mars-jumper-deploy
     # This is the entrypoint for the container
