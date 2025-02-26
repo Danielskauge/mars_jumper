@@ -33,12 +33,12 @@ class MarsJumperRobotCfg(ArticulationCfg):
             pos=(0.0, 0.0, 0.3), #TODO: Check if this is correct
             joint_pos={ #TODO: Check if these are correct
             "LF_HAA": abductor_angle, 
-            "LH_HAA": -abductor_angle, #postive angle is negative
-            "RF_HAA": -abductor_angle, #postive angle is negative
+            "LH_HAA": abductor_angle, 
+            "RF_HAA": abductor_angle, 
             "RH_HAA": abductor_angle,
             "LF_HFE": flexion_angle,
             "LH_HFE": flexion_angle,
-            "RF_HFE": -flexion_angle, #postive angle is negative
+            "RF_HFE": flexion_angle, 
             "RH_HFE": flexion_angle,
             "LF_KFE": knee_angle,
             "LH_KFE": knee_angle,
@@ -99,7 +99,7 @@ class MarsJumperRobotCfg(ArticulationCfg):
     
         
         spawn=sim_utils.UsdFileCfg(
-                usd_path=f"{os.getcwd()}/USD_files/example_usd/example_USD.usd",
+                usd_path=f"{os.getcwd()}/USD_files/parallell_spring_jumper/parallell_spring_jumper.usd",
                 activate_contact_sensors=True,
                 rigid_props=sim_utils.RigidBodyPropertiesCfg(
                     disable_gravity=False,
