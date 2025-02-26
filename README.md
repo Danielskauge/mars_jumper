@@ -9,8 +9,10 @@
 1. Go to `mars_jumper/docker`.
 2. Build the image: `docker compose --env-file .env.base --file docker-compose.yaml build mars-jumper`.
 3. Start the container:
-   - Foreground: `docker compose --env-file .env.base --file docker-compose.yaml up`
-   - Detached: `docker compose --env-file .env.base --file docker-compose.yaml up -d`
+   - Foreground: `docker compose --env-file .env.base --file docker-compose.yaml up <container_name>`
+   - Detached: `docker compose --env-file .env.base --file docker-compose.yaml up -d <container_name>`
+
+Note: Running a container will overwrite the existing container with the same service name, and mount the mars jumper directory from your own user directory.
 
 ## Interact with the Container
 - Access shell: `docker exec -it mars-jumper bash`
@@ -23,20 +25,27 @@
 
 # Training
 - run the training script: `python train.py --task mars-jumper-manager-based`
-- optional arguments:
     - `--livestream 2`: view livestream in webrtc
-    - `--video`: enables video recording during training
+    - `--headless`: run training without rendering
+- run training with recording: `python train.py --task mars-jumper-manager-based --video --headless --enable_cameras`
     - `--video_length`: length of each recorded video (in steps)
     - `--video_interval`: interval between each video recording (in steps)
     - Make sure to also add the `--enable_cameras` argument when running headless. Note that enabling recording is equivalent to enabling rendering during training, which will slow down both startup and runtime performance.
-- run training with recording:
-    - `python train.py --task mars-jumper-manager-based --video --video_length 1000 --video_interval 1000`
 
-The recorded videos will be saved in the same directory as the training checkpoints, under IsaacLab/logs/<rl_workflow>/<task>/<run>/videos/train
+The recorded videos will be saved in the same directory as the training checkpoints, under logs/<rl_workflow>/<task>/<run>/videos/train
 
 # Evaluation
 
 # Other functionality
+
+## Select GPU
+While in container, run `nvidia-smi` to see available GPUs.
+Run `export CUDA_VISIBLE_DEVICES=<gpu_id>` to select a specific GPU. GPU id is 0, 1, 2.
+
+## Kill processes
+- `ps aux | grep train.py`
+- `kill <pid>`
+
 
 ## How to convert URDF to USD
 
