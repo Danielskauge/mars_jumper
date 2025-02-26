@@ -23,24 +23,23 @@ simulation_app = app_launcher.app
 import torch
 import isaaclab.sim as sim_utils
 
-from mars_jumper.robot.robot_cfg import MarsJumperRobotConfig, MarsJumperRobot
+from robot.robot_cfg import MarsJumperRobotCfg
+from isaaclab.assets.articulation import Articulation #must be after applaunch
 
 def design_scene():
     """Designs the scene."""
-    # Ground-plane
     cfg = sim_utils.GroundPlaneCfg()
     cfg.func("/World/defaultGroundPlane", cfg)
-    # Lights
+
     cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
     cfg.func("/World/Light", cfg)
 
-    # Create origin for robot
     origin = [0.0, 0.0, 0.0]
     
     # Create Mars Jumper Robot
-    robot_cfg = MarsJumperRobotConfig()
+    robot_cfg = MarsJumperRobotCfg()
     robot_cfg.prim_path = "/World/robot"
-    mars_jumper_robot = MarsJumperRobot(robot_cfg)
+    mars_jumper_robot = Articulation(robot_cfg)
     #mars_jumper_robot.print_usd_info()
 
     return {"mars_jumper_robot": mars_jumper_robot}, [origin]
@@ -80,12 +79,12 @@ def run_simulator(sim: sim_utils.SimulationContext, entities: dict, origins: tor
         
         targets = {
             "LF_HAA": abductor_angle, 
-            "LH_HAA": -abductor_angle, #postive angle is negative
-            "RF_HAA": -abductor_angle, #postive angle is negative
+            "LH_HAA": abductor_angle, #postive angle is negative
+            "RF_HAA": abductor_angle, #postive angle is negative
             "RH_HAA": abductor_angle,
             "LF_HFE": flexion_angle,
             "LH_HFE": flexion_angle,
-            "RF_HFE": -flexion_angle, #postive angle is negative
+            "RF_HFE": flexion_angle, #postive angle is negative
             "RH_HFE": flexion_angle,
             "LF_KFE": knee_angle,
             "LH_KFE": knee_angle,
@@ -110,21 +109,7 @@ def main():
     # Initialize simulation
     sim = sim_utils.SimulationContext(sim_utils.SimulationCfg(dt=1/100))
     sim.set_camera_view(eye=[1, 1, 1], target=[0.0, 0.0, 0.0])
-    # Add camera that follows robot
-    # sim.add_camera_sensor(
-    #     prim_path="/World/camera",
-    #     position=[0, 0, 2],
-    #     target=[0, 0, 0],
-    #     clipping_range=(0.01, 100.0),
-    #     focal_length=24.0,
-    #     focus_distance=2.0,
-    #     horizontal_aperture=20.955,
-    #     horizontal_fov=90.0,
-    #     follow_target="/World/robot",
-    #     follow_offset=[0, -2, 1]
-    # )
-    
-    
+
     
     # Setup scene
     scene_entities, scene_origins =  design_scene()
