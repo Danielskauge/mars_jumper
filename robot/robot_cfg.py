@@ -5,40 +5,45 @@ from typing import Tuple, List
 import isaaclab.sim as sim_utils
 from isaaclab.assets.articulation import ArticulationCfg, Articulation
 from isaaclab.actuators import IdealPDActuatorCfg, ImplicitActuatorCfg
+from isaaclab.utils.configclass import configclass
 from .motors import get_AK7010_cfg, get_AK809_cfg
 
 DEG2RAD = torch.pi / 180.0
 RPM2RADPS = 2.0 * torch.pi / 60.0
 
-
+@configclass
 class MarsJumperRobotCfg(ArticulationCfg):
     """Configuration of mars jumper robot using cube mars motor model."""
-    HIP_FLEXION_JOINTS_REGEX: str = ".*_HAA.*"
-    HIP_ABDUCTION_JOINTS_REGEX: str = ".*_HFE.*"
-    KNEE_JOINTS_REGEX: str = ".*_KFE.*"
-    FEET_REGEX: str = ".*FOOT.*"
-    AVOID_CONTACT_BODIES_REGEX: List[str] = [".*base.*", ".*HIP.*", ".*THIGH.*", ".*SHANK.*"]
-
-    HIP_ABDUCTION_ANGLE_LIMITS_RAD: Tuple[float, float] = (90 * DEG2RAD, -90 * DEG2RAD) #TODO: Check if these are correct
-    KNEE_ANGLE_LIMITS_RAD: Tuple[float, float] = (90 * DEG2RAD, -90 * DEG2RAD) #TODO: Check if these are correct
-    HIP_FLEXION_ANGLE_LIMITS_RAD: Tuple[float, float] = (-90 * DEG2RAD, 90 * DEG2RAD) #TODO: Check if these are correct
-
     def __init__(self):
+        
+        self.HIP_FLEXION_JOINTS_REGEX: str = ".*_HAA.*"
+        self.HIP_ABDUCTION_JOINTS_REGEX: str = ".*_HFE.*"
+        self.KNEE_JOINTS_REGEX: str = ".*_KFE.*"
+        self.FEET_REGEX: str = ".*FOOT.*"
+        self.AVOID_CONTACT_BODIES_REGEX: List[str] = [".*base.*", ".*HIP.*", ".*THIGH.*", ".*SHANK.*"]
+
+        self.HIP_ABDUCTION_ANGLE_LIMITS_RAD: Tuple[float, float] = (0, 90 * DEG2RAD) #TODO: Check if these are correct
+        self.KNEE_ANGLE_LIMITS_RAD: Tuple[float, float] = (90 * DEG2RAD, -90 * DEG2RAD) #TODO: Check if these are correct
+        self.HIP_FLEXION_ANGLE_LIMITS_RAD: Tuple[float, float] = (-90 * DEG2RAD, 90 * DEG2RAD) #TODO: Check if these are correct
+            
+        self.HIP_LINK_LENGTH: float = 0.11
+        self.KNEE_LINK_LENGTH: float = 0.11
+        self.PAW_DIAMETER: float = 0.03
         
         abductor_angle = 0 * DEG2RAD
         flexion_angle = 0 * DEG2RAD
         knee_angle = 0 * DEG2RAD
 
         init_state = ArticulationCfg.InitialStateCfg(
-            pos=(0.0, 0.0, 0.3), #TODO: Check if this is correct
+            pos=(0.0, 0.0, 0.15),
             joint_pos={ #TODO: Check if these are correct
             "LF_HAA": abductor_angle, 
-            "LH_HAA": -abductor_angle, #postive angle is negative
-            "RF_HAA": -abductor_angle, #postive angle is negative
+            "LH_HAA": abductor_angle, #postive angle is negative
+            "RF_HAA": abductor_angle, #postive angle is negative
             "RH_HAA": abductor_angle,
             "LF_HFE": flexion_angle,
             "LH_HFE": flexion_angle,
-            "RF_HFE": -flexion_angle, #postive angle is negative
+            "RF_HFE": flexion_angle, #postive angle is negative
             "RH_HFE": flexion_angle,
             "LF_KFE": knee_angle,
             "LH_KFE": knee_angle,
@@ -59,15 +64,15 @@ class MarsJumperRobotCfg(ArticulationCfg):
             # ),
             "knee_torsional_springs": ImplicitActuatorCfg(
                 joint_names_expr=self.KNEE_JOINTS_REGEX,
-                effort_limit=1.0,
-                stiffness=1.0,
+                effort_limit=100.0,
+                stiffness=100.0,
                 damping=10.0,
                 friction=0.1,
             ),
             "hip_torsional_springs": ImplicitActuatorCfg(
                 joint_names_expr=self.HIP_FLEXION_JOINTS_REGEX,
-                effort_limit=1.0,
-                stiffness=1.0, #TODO: Add correct values
+                effort_limit=100.0,
+                stiffness=100.0, #TODO: Add correct values
                 damping=10.0,
                 friction=0.1,
             ),
