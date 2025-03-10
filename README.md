@@ -29,10 +29,23 @@ Note: Running a container will overwrite the existing container with the same se
     - `--headless`: run training without rendering
 - run training with recording: `python train.py --task mars-jumper-manager-based --video --headless --enable_cameras`
     - `--video_length`: length of each recorded video (in steps)
-    - `--video_interval`: interval between each video recording (in steps)
+    - `--video_interval`: interval between each video recording (in steps)q
     - Make sure to also add the `--enable_cameras` argument when running headless. Note that enabling recording is equivalent to enabling rendering during training, which will slow down both startup and runtime performance.
 
 The recorded videos will be saved in the same directory as the training checkpoints, under logs/<rl_workflow>/<task>/<run>/videos/train
+
+# Distributed Training
+```
+python -m torch.distributed.run --nnodes=1 --nproc_per_node=3 train.py --task mars-jumper-manager-based --distributed --headless
+```
+
+Needs sufficient shared memory allocated to the container. See `docker-compose.yaml` for the default of 1GB.
+
+Distritbeted with video recording:
+```
+python -m torch.distributed.run --nnodes=1 --nproc_per_node=3 train.py --task mars-jumper-manager-based --distributed --headless --enable_cameras --video --video_length 500 --video_interval 10
+```
+
 
 # Evaluation
 
