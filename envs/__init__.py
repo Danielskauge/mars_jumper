@@ -7,7 +7,7 @@ from .env import MarsJumperEnv
 
 gym.register(
     id="mars-jumper-manager-based",
-    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    entry_point="envs.env:MarsJumperEnv",
     disable_env_checker=True,
     kwargs={
         "env_cfg_entry_point": MarsJumperEnvCfg,

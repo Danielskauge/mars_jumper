@@ -2,17 +2,14 @@
 # All rights reserved.
 #
 # SPDX-License-Identifier: BSD-3-Clause
-
-import math
-from dataclasses import MISSING
-
 import numpy as np
 import torch
+from typing import Tuple
 
+from isaaclab.managers.manager_term_cfg import CurriculumTermCfg
 import isaaclab.sim as sim_utils
 from isaaclab.assets import ArticulationCfg, AssetBaseCfg
-from isaaclab.envs import ManagerBasedRLEnvCfg, ManagerBasedRLEnv
-from isaaclab.managers import CurriculumTermCfg
+from isaaclab.envs import ManagerBasedRLEnvCfg
 from isaaclab.managers import EventTermCfg
 from isaaclab.managers import ObservationGroupCfg as ObservationGroupCfg
 from isaaclab.managers import ObservationTermCfg
@@ -23,30 +20,36 @@ from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sensors import ContactSensorCfg, RayCasterCfg, patterns
 from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.utils import configclass
-from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR, ISAACLAB_NUCLEUS_DIR
+from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
 
 from isaaclab.envs import mdp
 from isaaclab.envs.common import ViewerCfg
-from terms import curriculums
 from terms import rewards as custom_rewards
 from terms import events as custom_events
+from terms import curriculums as custom_curriculums
 from terms import observations as custom_observations
-from terms.command import TakeoffVelVecCommand, TakeoffVelVecCommandCfg
+from terms.modifiers import RunningStatsNormalizerCfg
+from terms import terminations as custom_terminations
 #import isaaclab_tasks.manager_based.locomotion.velocity.mdp as mdp
 
 ##
 # Pre-defined configs
 ##
-from isaaclab.terrains.config.rough import ROUGH_TERRAINS_CFG
 from robot.robot_cfg import MarsJumperRobotCfg  # isort: skip
 
-##
-# Scene definition
-##
+MAX_EPISODE_LENGTH_S = 5.0
+DEG2RAD = np.pi/180
 
-MAX_EPISODE_LENGTH_S = 20.0
-
+@configclass
+class CommandRangesCfg:
+    """Configuration for command ranges."""
+    initial_pitch_range: Tuple[float, float] = (0.0, 0.0) # Initial pitch range
+    initial_magnitude_range: Tuple[float, float] = (1.0, 1.0) # Initial magnitude range
+    
+    final_pitch_range: Tuple[float, float] = (0.0, 0.0) # Final pitch range
+    final_magnitude_range: Tuple[float, float] = (4.0, 5.0) # Final magnitude range
+    
 @configclass
 class MySceneCfg(InteractiveSceneCfg):
     """Configuration for the terrain scene with a legged robot."""
@@ -76,7 +79,7 @@ class MySceneCfg(InteractiveSceneCfg):
         debug_vis=False,
         mesh_prim_paths=["/World/ground"],
     )
-    contact_forces = ContactSensorCfg(prim_path="/World/envs/env_.*/robot/.*", history_length=3, track_air_time=True)
+    contact_forces = ContactSensorCfg(prim_path="/World/envs/env_.*/robot/.*", history_length=5, track_air_time=True)
     # lights
     sky_light = AssetBaseCfg(
         prim_path="/World/skyLight",
@@ -85,38 +88,14 @@ class MySceneCfg(InteractiveSceneCfg):
             texture_file=f"{ISAAC_NUCLEUS_DIR}/Materials/Textures/Skies/PolyHaven/kloofendal_43d_clear_puresky_4k.hdr",
         ),
     )
-    
-##
-# MDP settings
-##
-
-@configclass
-class CommandsCfg:
-    """
-    Commands are sampled at the beginning of each episode, but additionally resampled during episodes based on the resampling_time_range parameter in the CommandTermCfg. 
-    The CommandTerm.compute() method is called at each env step and decrements the term-specific time_left counter every time it is called. 
-    When time_left reaches zero, the command is resampled.
-    """
-
-    takeoff_vel_vec = TakeoffVelVecCommandCfg(
-        class_type=TakeoffVelVecCommand,
-        asset_name="robot",
-        resampling_time_range=(MAX_EPISODE_LENGTH_S+1, MAX_EPISODE_LENGTH_S+1),
-        debug_vis=True,
-        ranges=TakeoffVelVecCommandCfg.Ranges(
-            pitch_rad=(0.0, 0.0), #These will be the initial ranges used for curriculum
-            magnitude=(1.0, 2.0), 
-        )
-    )
 
 @configclass
 class ActionsCfg:
     """
     Actions are resampled at each step of the environment.
     """
-    joint_pos = mdp.JointPositionActionCfg(asset_name="robot", joint_names=[".*"], scale=1, use_default_offset=True) #TODO understand clip
+    joint_pos = mdp.JointPositionActionCfg(asset_name="robot", debug_vis=True, joint_names=[".*"], use_default_offset=True) 
     
-
 @configclass
 class ObservationsCfg:
     """
@@ -126,30 +105,20 @@ class ObservationsCfg:
     @configclass
     class PolicyCfg(ObservationGroupCfg):
         """Observation term configs for policy group."""
-
-        base_lin_vel = ObservationTermCfg(func=mdp.base_lin_vel, noise=Unoise(n_min=-0.01, n_max=0.01))
-        base_ang_vel = ObservationTermCfg(func=mdp.base_ang_vel, noise=Unoise(n_min=-0.01, n_max=0.01))
-        base_quat = ObservationTermCfg(func=mdp.root_quat_w, noise=Unoise(n_min=-0.01, n_max=0.01))
+        base_height = ObservationTermCfg(func=mdp.base_pos_z, noise=Unoise(n_min=-0.05, n_max=0.05))
+        base_lin_vel = ObservationTermCfg(func=mdp.base_lin_vel, noise=Unoise(n_min=-0.05, n_max=0.05))
+        base_ang_vel = ObservationTermCfg(func=mdp.base_ang_vel, noise=Unoise(n_min=-0.05, n_max=0.05))
+        base_quat = ObservationTermCfg(func=mdp.root_quat_w, noise=Unoise(n_min=-0.05, n_max=0.05))
         
-        # # projected_gravity = ObservationTermCfg(
-        # #     func=mdp.projected_gravity,
-        # #     noise=Unoise(n_min=-0.05, n_max=0.05),
-        # # )
-        # joint_pos = ObservationTermCfg(func=mdp.joint_pos_rel, noise=Unoise(n_min=-0.01, n_max=0.01))
-        # joint_vel = ObservationTermCfg(func=mdp.joint_vel_rel, noise=Unoise(n_min=-1.5, n_max=1.5))
-        # actions = ObservationTermCfg(func=mdp.last_action)
-        # height_scan = ObservationTermCfg( #TODO: what is this?
-        #     func=mdp.base_pos_z,
-        #     noise=Unoise(n_min=-0.1, n_max=0.1),
-        #     )
-        # has_taken_off = ObservationTermCfg(
-        #     func=custom_observations.has_taken_off,
-        #     params={"height_threshold": 0.15}
-        # )
-        takeoff_vel_vec_cmd = ObservationTermCfg( #TODO can add observation history direcltiy here
-            func=custom_observations.takeoff_vel_vec_cmd,
-            noise=Unoise(n_min=-0.01, n_max=0.01),
-        )
+        joint_pos = ObservationTermCfg(func=mdp.joint_pos_rel, noise=Unoise(n_min=-0.01, n_max=0.01))
+        joint_vel = ObservationTermCfg(func=mdp.joint_vel_rel, noise=Unoise(n_min=-1.5, n_max=1.5))
+        
+        previous_actions = ObservationTermCfg(func=mdp.last_action)
+        #previous_torque = ObservationTermCfg(func=mdp.applied_torque) fix this maybe
+        
+        has_taken_off = ObservationTermCfg(func=custom_observations.has_taken_off)
+        
+        command_vec = ObservationTermCfg(func=custom_observations.takeoff_vel_vec_cmd, noise=Unoise(n_min=-0.01, n_max=0.01))
 
         def __post_init__(self):
             self.enable_corruption = False 
@@ -170,9 +139,9 @@ class EventCfg:
 
     # startup
    
-    # physics_material = EventTermCfg(
+    # randomize_rigid_body_material = EventTermCfg(
     #     func=mdp.randomize_rigid_body_material,
-    #     mode="startup",
+    #     mode="reset",
     #     params={
     #         "asset_cfg": SceneEntityCfg("robot", body_names=".*"),
     #         "static_friction_range": (0.7, 0.8),
@@ -182,154 +151,186 @@ class EventCfg:
     #     },
     # )
 
-    # add_base_mass = EventTermCfg(
+    # randomize_base_mass = EventTermCfg(
     #     func=mdp.randomize_rigid_body_mass,
-    #     mode="startup",
+    #     mode="reset",
     #     params={
-    #         "asset_cfg": SceneEntityCfg("robot", body_names="base"),
+    #         "asset_cfg": SceneEntityCfg("robot", body_names=".*"),
     #         "mass_distribution_params": (0.8, 1.2),
     #         "operation": "scale",
     #     },
     # )
     
-    initialize_buffers = EventTermCfg(
-        func=custom_events.initialize_buffers,
-        mode="startup",
-    )
-
+    # randomize_joint_friction = EventTermCfg(
+    #     func=mdp.randomize_joint_parameters,
+    #     mode="reset",
+    #     params={
+    #         "asset_cfg": SceneEntityCfg("robot", body_names=".*"),
+    #         "friction_distribution_params": (0.9, 1.1),
+    #         "operation": "scale",
+    #     },
+    # )
     # reset
     
-    #This needs to be placed first among the reset events, as the cmd it samples is used in the state initialization terms
-    reset_command = EventTermCfg(
-        func=custom_events.reset_command,
+
+    reset_robot_takeoff_state = EventTermCfg(
+        func=custom_events.set_phase_to_takeoff,
         mode="reset",
     )
 
-    reset_robot_initial_state = EventTermCfg(
-        func=custom_events.reset_robot_initial_state,
-        mode="reset",
-        params={
-            "crouch_flight_ratio": 1,
-            "crouch_flexor_angle_range_rad": (-torch.pi/3, -torch.pi/4),
-            "flight_base_euler_angles_range_rad": (-torch.pi/16, torch.pi/16),
-            "flight_flexor_angles_range_rad": (-torch.pi/4, torch.pi/4),
-            "flight_abductor_angles_range_rad": (-torch.pi/8, torch.pi/8),
-        },
-    )
-    
-    reset_episodic_buffers = EventTermCfg(
-        func=custom_events.reset_episodic_buffers,
-        mode="reset",
-    )
-
-    
 @configclass
 class RewardsCfg:
     """
     Rewards are computed at each step of the environment (which can include multiple physics steps). 
     There is no built in implementation of per-episode rewards.
     """
-    dof_pos_limits = RewardTermCfg(func=mdp.joint_pos_limits, weight=0.0)
-    
+    #LANDING PHASE ONLY
+    landing_com_accel = RewardTermCfg(
+        func=custom_rewards.landing_com_accel, 
+        weight=0.0
+    )
+    feet_ground_impact_force = RewardTermCfg(
+        func=custom_rewards.feet_ground_impact_force,
+        weight=0.0,
+    )
+    #NOT FLIGHT PHASE
+    left_right_joint_symmetry = RewardTermCfg(
+        func=custom_rewards.left_right_joint_symmetry,
+        weight=0.1,
+    )
+    #CROUCH PHASE ONLY
+    crouch_knee_angle = RewardTermCfg(
+        func=custom_rewards.crouch_knee_angle,
+        weight=0.0, #positive
+        params={"target_angle_rad": torch.pi*0.8, "reward_type": "cosine"},
+    )
+    crouch_hip_angle = RewardTermCfg(
+        func=custom_rewards.crouch_hip_angle,
+        weight=0.0, #positive
+        params={"target_angle_rad": -torch.pi*0.4, "reward_type": "cosine"},
+    )
+    crouch_abductor_angle = RewardTermCfg(
+        func=custom_rewards.crouch_abductor_angle,
+        weight=0.0, #positive
+        params={"target_angle_rad": 0.0, "reward_type": "cosine"},
+    )
+    #CROUCH AND LANDING PHASES
+    feet_ground_contact = RewardTermCfg(
+        func=custom_rewards.feet_ground_contact,
+        weight=0, #0.01, #positive
+    )
+    flat_orientation = RewardTermCfg(
+        func=custom_rewards.flat_orientation,
+        weight=-0.1,
+    )
+    #TAKEOFF AND LANDING PHASES
+    equal_force_distribution = RewardTermCfg(
+        func=custom_rewards.equal_force_distribution,
+        weight=0.0,
+    )
+    #TAKEOFF PHASE ONLY
+    takeoff_vel_vec_magnitude = RewardTermCfg(
+        func=custom_rewards.takeoff_vel_vec_magnitude,
+        weight=0.0,
+    )
+    takeoff_vel_vec_angle = RewardTermCfg(
+        func=custom_rewards.takeoff_vel_vec_angle,
+        weight=0.0, 
+    )
+    #ALWAYS ACTIVE
+    joint_acc_l2 = RewardTermCfg(
+        func=mdp.joint_acc_l2, #TODO: should make a custom one not active in takeoff phase
+        weight= 0, #-2.5e-7
+    )
+    joint_torques_l2 = RewardTermCfg(
+        func=mdp.joint_torques_l2,  #TODO: should make a custom one not active in takeoff phase
+        weight=0.0, #-1e-5
+    )
+    action_rate_l2 = RewardTermCfg(
+        func=mdp.action_rate_l2, #TODO: should make a custom one not active in takeoff phase
+        weight= -0.1,
+    )
+    is_terminated = RewardTermCfg(
+        func=mdp.is_terminated_term,
+        weight= -0.0, #-0.1,
+    )
+    # feet_slide = RewardTermCfg(
+    #     func=custom_rewards.feet_slide,
+    #     weight=-0.5,
+    #     params={
+    #         "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*FOOT.*")
+    #     },
+    # )
+    dof_pos_limits = RewardTermCfg(
+        func=mdp.joint_pos_limits, #returns stricly non-negative values
+        weight=0, #-0.1
+    )
     undesired_contacts = RewardTermCfg(
         func=mdp.contact_forces,
-        weight=0.0,
-        params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*THIGH"), "threshold": 1.0},
+        weight=0.0, #-0.1,
+        params={"sensor_cfg": 
+                SceneEntityCfg(
+                    name="contact_forces", 
+                    body_names=[".*THIGH.*", ".*SHANK.*", ".*HIP.*", ".*base.*"]
+                ), 
+                "threshold": 0.5
+        },
     )
     
-    takeoff_vel_vec_magnitude_error = RewardTermCfg(
-        func=custom_rewards.takeoff_vel_vec_magnitude_error,
-        weight=1.0,
-    )
-    takeoff_vel_vec_angle_error = RewardTermCfg(
-        func=custom_rewards.takeoff_vel_vec_angle_error,
-        weight=0.0,
-    )
-        
-    flat_orientation_l2 = RewardTermCfg(func=mdp.flat_orientation_l2, weight=0.0)
-    joint_acc_l2 = RewardTermCfg(func=mdp.joint_acc_l2, weight=0.0)
-    joint_torques_l2 = RewardTermCfg(func=mdp.joint_torques_l2, weight=0.0)
-    action_rate_l2 = RewardTermCfg(func=mdp.action_rate_l2, weight=0.0)
-    lin_vel_z_l2 = RewardTermCfg(func=mdp.lin_vel_z_l2, weight=0.0)
-
-
 @configclass
 class TerminationsCfg:
     """Termination terms for the MDP."""
-
     time_out = TerminationTermCfg(func=mdp.time_out, time_out=True)
-    base_contact = TerminationTermCfg(
-        func=mdp.illegal_contact,
-        params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names="base"), "threshold": 1.0},
-    )
-    bad_orientation = TerminationTermCfg(
-        func=mdp.bad_orientation,
-        params={"asset_cfg": SceneEntityCfg("robot", body_names="base"), "limit_angle": np.pi/4},
-    )
-    # self_collision = TerminationTermCfg(
-    #     func=custom_terminations.self_collision,
-    #     params={"asset_cfg": SceneEntityCfg("robot", body_names=".*"), "threshold": 1.0},
-    # ) #TODO: implement
-
-
+    base_contact = TerminationTermCfg(func=mdp.illegal_contact, params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names="base"), "threshold": 1.0})
+    reached_takeoff_height = TerminationTermCfg(func=custom_terminations.reached_takeoff_height, params={"height_threshold": 0.20})
+    #bad_orientation = TerminationTermCfg(func=mdp.bad_orientation, params={"asset_cfg": SceneEntityCfg("robot", body_names="base"), "limit_angle": np.pi/4})
+    # self_collision = TerminationTermCfg(func=custom_terminations.self_collision, params={"asset_cfg": SceneEntityCfg("robot", body_names=".*"), "threshold": 1.0}) #TODO: implement
+    landed = TerminationTermCfg(func=custom_terminations.landed)
 @configclass
 class CurriculumCfg:
-    """Curriculum terms are run all at once by the curriculum manager compute() method, 
-    which is called at the _reset_idx() method of the environment."""
-    
-    # command = CurriculumTermCfg(
-    #     func=curriculums.change_command_ranges,
-    #     params={
-    #         "num_curriculum_steps": 10,
-    #         "final_magnitude_range": (4.0, 5.0),
-    #         "steps_per_increment": 10,
-    #     },
-    # )
-        
-    # domain_randomization_ranges = CurriculumTermCfg(
-    #     func=custom_events.domain_randomization_ranges,
-    #     params={
-    #         "success_threshold": 0.5,
-    #     },
-    # )
-    
-##
-# Environment configuration
-##
+    """Curriculum terms."""
 
+    command_range_progression = CurriculumTermCfg(
+        func=custom_curriculums.progress_command_ranges,
+        params={
+            "num_curriculum_levels": 10,
+        },
+    )
+        
 @configclass
 class MarsJumperEnvCfg(ManagerBasedRLEnvCfg):
-    """Configuration for the locomotion velocity-tracking environment."""
 
-    # Scene settings
-    scene: MySceneCfg = MySceneCfg(num_envs=4, env_spacing=2)
-    # Basic settings
+    scene: MySceneCfg = MySceneCfg(num_envs=1024*2, env_spacing=1)
+    command_ranges: CommandRangesCfg = CommandRangesCfg()
     observations: ObservationsCfg = ObservationsCfg()
     actions: ActionsCfg = ActionsCfg()
-    commands: CommandsCfg = CommandsCfg()
-    # MDP settings
     rewards: RewardsCfg = RewardsCfg()
     terminations: TerminationsCfg = TerminationsCfg()
     events: EventCfg = EventCfg()
     curriculum: CurriculumCfg = CurriculumCfg()
 
     def __post_init__(self):
-        """Post initialization."""
-        # general settings
-        self.decimation = 4
+
+        #Takeoff success criteria
+        self.takeoff_magnitude_ratio_error_threshold = 0.1
+        self.takeoff_angle_error_threshold = 10*DEG2RAD
+        
+        self.real_time_control_dt = 1/120
+        self.sim.dt = 1/480 #Physics time step, also the torque update rate
         self.episode_length_s = MAX_EPISODE_LENGTH_S
-        # simulation settings
         self.viewer = ViewerCfg(
-            eye=[1, 1, 1],
+            eye=[0.5, 0.5, 0.5],
             lookat=[0, 0, 0],
+            origin_type="asset_root",
+            asset_name="robot",
             resolution=(1280, 720),
-            origin_type="world",
         )
         
         self.mars_gravity = -3.721
         self.sim.gravity = (0.0, 0.0, self.mars_gravity)
-        self.sim.dt = 1/300
-        self.sim.render_interval = self.decimation
+        self.decimation = int(self.real_time_control_dt / self.sim.dt) #Number of physics steps per env step 
+ 
+        self.sim.render_interval = self.decimation #Number of physics steps between render frames
         self.sim.disable_contact_processing = True
         self.sim.physics_material = self.scene.terrain.physics_material
         self.sim.physx.gpu_max_rigid_patch_count = 10 * 2**15
@@ -339,7 +340,7 @@ class MarsJumperEnvCfg(ManagerBasedRLEnvCfg):
             self.scene.height_scanner.update_period = self.decimation * self.sim.dt
         if self.scene.contact_forces is not None:
             self.scene.contact_forces.update_period = self.sim.dt
-
+        
         # check if terrain levels curriculum is enabled - if so, enable curriculum for terrain generator
         # this generates terrains with increasing difficulty and is useful for training
         #if getattr(self.curriculum, "terrain_levels", None) is not None:

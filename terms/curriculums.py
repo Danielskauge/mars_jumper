@@ -41,12 +41,10 @@ def modify_reward_weight(env: ManagerBasedRLEnv, env_ids: Sequence[int], term_na
         env.reward_manager.set_term_cfg(term_name, term_cfg)
 
 
-def change_command_ranges(
+def progress_command_ranges(
     env: ManagerBasedRLEnv,
     env_ids: Sequence[int],
-    num_curriculum_steps: int = 10,
-    final_magnitude_range: Tuple[float, float] = (4.0, 5.0),
-    steps_per_increment: int = 10,
+    num_curriculum_levels: int = 10,
 ) -> None:
     """Set the command takeoff vector magnitude ranges for the robot. 
     The initial range is set to the initial magnitude range of the command term, and will be incremented linearly to the final range over the number of curriculum steps.
@@ -54,35 +52,31 @@ def change_command_ranges(
     Args:
         env: The environment instance
         env_ids: Not used since all environments are affected
-        num_steps: Number of steps to split the curriculum into from 0 to 1 percent completion from initial to final magnitude range
-        final_magnitude_range: Final range for takeoff velocity magnitude
-        steps_per_increment: Number of steps between curriculum increments
-        
-    
+        num_curriculum_levels: Number of curriculum levels to split the curriculum into from 0 to 1 percent completion from initial to final magnitude range
     """  
     
-    initial_magnitude_range = env.command_manager.get_term("takeoff_vel_vec").cfg.ranges.magnitude
+    progress_ratio = env.cmd_curriculum_progress_ratio
+    initial_magnitude_range = env.cfg.command_ranges.initial_magnitude_range
+    final_magnitude_range = env.cfg.command_ranges.final_magnitude_range
 
-    progress_ratio: torch.float32 = env._takeoff_vel_magnitude_curriculum_progress_ratio
-
-    current_mag_min: torch.float32 = initial_magnitude_range[0] + progress_ratio * (final_magnitude_range[0] - initial_magnitude_range[0])
-    current_mag_max: torch.float32 = initial_magnitude_range[1] + progress_ratio * (final_magnitude_range[1] - initial_magnitude_range[1])
+    current_magnitude_min = initial_magnitude_range[0] + progress_ratio * (final_magnitude_range[0] - initial_magnitude_range[0])
+    current_magnitude_max = initial_magnitude_range[1] + progress_ratio * (final_magnitude_range[1] - initial_magnitude_range[1])
     
-    takeoff_vel_cmd = env.command_manager.get_term("takeoff_vel_vec")
-    takeoff_vel_cmd.cfg.magnitude_range = (current_mag_min, current_mag_max) #TODO make sure namign is correct
+    env._cmd_magnitude_range = (current_magnitude_min, current_magnitude_max)
+    env._cmd_pitch_range = (env.cfg.command_ranges.initial_pitch_range[0], env.cfg.command_ranges.final_pitch_range[0])
     
-    increment_curriculum: bool = (env.common_step_counter % steps_per_increment == 0 and env.common_step_counter != 0)
+    increment_curriculum: bool = False
     
     if increment_curriculum:
-        env._takeoff_vel_magnitude_curriculum_progress_ratio += 1/num_curriculum_steps
-        print("Advancing takeoff magnitude curriculum: current_step_counter %s, progress ratio %s, mag=[%s, %s]", env.common_step_counter, env._takeoff_vel_magnitude_curriculum_progress_ratio, current_mag_min, current_mag_max)
+        env.cmd_curriculum_progress_ratio += 1/num_curriculum_levels
+        print("Advancing takeoff magnitude curriculum: current_step_counter %s, progress ratio %s, mag=[%s, %s]", env.common_step_counter, env.cmd_curriculum_progress_ratio, current_magnitude_min, current_magnitude_max)
 
         
     # Need to return state to be logged
     return {
-        "takeoff_vel_magnitude_curriculum_progress_ratio": env._takeoff_vel_magnitude_curriculum_progress_ratio,
-        "takeoff_vel_magnitude_min": current_mag_min,
-        "takeoff_vel_magnitude_max": current_mag_max,
+        "cmd_curriculum_progress_ratio": env.cmd_curriculum_progress_ratio,
+        "cmd_magnitude_min": current_magnitude_min,
+        "cmd_magnitude_max": current_magnitude_max,
     }
     
     # Might change success based on reward later

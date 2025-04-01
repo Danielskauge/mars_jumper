@@ -1,3 +1,4 @@
+
 # Copyright (c) 2022-2025, The Isaac Lab Project Developers.
 # All rights reserved.
 #
@@ -15,11 +16,12 @@ import torch
 from typing import TYPE_CHECKING
 
 from isaaclab.assets import RigidObject
+from isaaclab.assets.articulation.articulation import Articulation
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.sensors import ContactSensor
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
-
+from terms.phase import Phase
 
 def self_collision(
     env: ManagerBasedRLEnv,
@@ -39,6 +41,28 @@ def self_collision(
     # asset: RigidObject = env.scene[asset_cfg.name]
     
     pass
+
+
+def reached_takeoff_height(
+    env: ManagerBasedRLEnv,
+    height_threshold: float = 0.20
+) -> torch.Tensor:
+    """Terminate when the robot reaches a certain height."""
+    
+    # Get the height of the robot
+    height = env.scene[SceneEntityCfg("robot").name].data.root_pos_w[:, 2]
+    
+    return height > height_threshold
+
+def landed(
+    env: ManagerBasedRLEnv,
+) -> torch.Tensor:
+    """Terminate when the robot lands on the ground."""
+    #TODO: this uses the phase defintion of when to start to land, not the same as landing in terms of touch down
+    return env._phase_buffer == Phase.LANDING
+    
+    
+
     
     
     

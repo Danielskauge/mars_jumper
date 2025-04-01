@@ -1,0 +1,37 @@
+# sweep.yaml
+program: mars_jumper/train.py # Adjusted path
+method: grid
+metric:
+  name: results/mean_reward # Placeholder: Change to your actual optimization metric
+  goal: maximize
+parameters:
+  # Agent parameters (from rl_games_ppo_cfg.yaml)
+  learning_rate:
+    values: [1e-3, 5e-4, 1e-4]
+  gamma:
+    values: [0.99, 0.995]
+  entropy_coef:
+    values: [0.0, 0.001, 0.0025]
+  e_clip:
+    values: [0.1, 0.2]
+
+  # Environment parameters (from env_cfg.py - reward weights)
+  # Note: Use distinct names here to avoid clashes with agent config keys
+  env_reward_crouch_knee_angle_weight:
+    values: [0.5, 1.0, 1.5]
+  env_reward_crouch_hip_angle_weight:
+    values: [0.5, 1.0, 1.5]
+  env_reward_action_rate_l2_weight:
+    values: [-0.05, -0.1, -0.2]
+
+  # Pass task name via command line equivalent for hydra
+  task:
+    value: MarsJumper # Ensure this matches your task name
+
+  # Ensure wandb is enabled for sweep runs
+  wandb:
+    value: True
+
+  # You might need to override other CLI args here if train.py expects them
+  # num_envs:
+  #   value: 1024 

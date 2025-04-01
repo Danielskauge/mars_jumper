@@ -14,6 +14,9 @@ USER root
 # # Install whatever you need as additional dependencies.
 RUN bash -i -c "source ${HOME}/.bashrc"
 
+RUN git config --global --add safe.directory /workspace/mars_jumper
+
+
 # make working directory as the Isaac Lab directory
 # this is the default directory when the container is run
 WORKDIR /workspace

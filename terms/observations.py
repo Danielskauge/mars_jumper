@@ -7,8 +7,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
-
+from terms.phase import Phase
 import torch
 
 from isaaclab.managers import SceneEntityCfg
@@ -20,40 +21,24 @@ if TYPE_CHECKING:
 
 def has_taken_off(
     env: ManagerBasedEnv, 
-    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
-    height_threshold: float = 0.1
 ) -> torch.Tensor:
-    """Observation that indicates whether the robot has jumped (taken off).
+    """Observation that indicates whether the robot has taken off.
     
-    The observation returns 1.0 if the robot's base is above the height_threshold,
-    and 0.0 otherwise. Once an environment has toggled to 1.0, it stays at 1.0
-    until the environment is reset.
+    The observation returns 1.0 if the robot has transitioned to flight or landing,
+    and 0.0 otherwise. 
     
     Args:
         env: The environment instance.
-        asset_cfg: The asset configuration for the robot.
-        height_threshold: The height threshold above which the robot is considered to have jumped.
         
     Returns:
-        A tensor of shape (num_envs, 1) with 1.0 for environments where the robot has jumped
+        A tensor of shape (num_envs, 1) with 1.0 for environments where the robot has taken off
         and 0.0 for environments where it hasn't.
     """
-    robot: Articulation = env.scene[asset_cfg.name]
+    if not hasattr(env, "_phase_buffer"):
+        return torch.zeros(env.num_envs, 1, device=env.device)
     
-    current_height = robot.data.root_pos_w[:, 2]
+    return (env._phase_buffer == (Phase.FLIGHT | Phase.LANDING)).float().unsqueeze(-1)
     
-    if not hasattr(env, "_has_taken_off_buffer"):
-        env._has_taken_off_buffer = torch.zeros(env.num_envs, device=env.device, dtype=torch.float32)
-        
-    
-    above_threshold = current_height > height_threshold
-    
-    # Update the jump toggle buffer - once toggled to 1, it stays at 1
-    env._has_taken_off_buffer = torch.logical_or(env._has_taken_off_buffer, above_threshold).to(torch.float32)
-    
-    # Return the jump toggle as a tensor of shape (num_envs, 1)
-    return env._has_taken_off_buffer.unsqueeze(-1) 
-
 
 def takeoff_vel_vec_cmd(
     env: ManagerBasedRLEnv,
@@ -67,9 +52,10 @@ def takeoff_vel_vec_cmd(
         A tensor of shape (num_envs, 2) with the takeoff velocity vector command (pitch, magnitude)
     """
     # During observation manager initialization, command_manager might not be fully set up
-    if not hasattr(env, "command_manager") or env.command_manager is None:
+    if not hasattr(env, "_command_buffer") or env._command_buffer is None:
         # Return a dummy tensor with the expected shape (num_envs, 2)
         return torch.zeros((env.num_envs, 2), device=env.device)
     
-    return env.command_manager.get_command("takeoff_vel_vec")
+    return env._command_buffer
+
 
