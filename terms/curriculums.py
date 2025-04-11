@@ -45,6 +45,8 @@ def progress_command_ranges(
     env: ManagerBasedRLEnv,
     env_ids: Sequence[int],
     num_curriculum_levels: int = 10,
+    success_rate_threshold: float = 0.9,
+    
 ) -> None:
     """Set the command takeoff vector magnitude ranges for the robot. 
     The initial range is set to the initial magnitude range of the command term, and will be incremented linearly to the final range over the number of curriculum steps.
@@ -65,16 +67,14 @@ def progress_command_ranges(
     env._cmd_magnitude_range = (current_magnitude_min, current_magnitude_max)
     env._cmd_pitch_range = (env.cfg.command_ranges.initial_pitch_range[0], env.cfg.command_ranges.final_pitch_range[0])
     
-    increment_curriculum: bool = False
-    
-    if increment_curriculum:
+    if env.running_success_rate > success_rate_threshold and env.env_steps_since_last_curriculum_update > env.max_episode_length/2 and env.cmd_curriculum_progress_ratio < 1:
         env.cmd_curriculum_progress_ratio += 1/num_curriculum_levels
+        env.env_steps_since_last_curriculum_update = 0
         print("Advancing takeoff magnitude curriculum: current_step_counter %s, progress ratio %s, mag=[%s, %s]", env.common_step_counter, env.cmd_curriculum_progress_ratio, current_magnitude_min, current_magnitude_max)
-
         
     # Need to return state to be logged
     return {
-        "cmd_curriculum_progress_ratio": env.cmd_curriculum_progress_ratio,
+        "progress_ratio": env.cmd_curriculum_progress_ratio,
         "cmd_magnitude_min": current_magnitude_min,
         "cmd_magnitude_max": current_magnitude_max,
     }

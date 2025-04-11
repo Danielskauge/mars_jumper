@@ -60,17 +60,23 @@ class MarsJumperRobotCfg(ArticulationCfg):
         # stiffness = 0.5 #Nm/rad
         # damping = 0.02 #Nm/rad/s
         
-        #Implicit control (verified to work in test env)
-        stall_torque = 2 #Nm
-        velocity_limit = 30 #rad/s 
-        stiffness = 10 #Nm/rad
-        damping = 0.02 #Nm/rad/s
+        # #Implicit control (verified to work in test env)
+        # stall_torque = 2 #Nm
+        # velocity_limit = 30 #rad/s 
+        # stiffness = 15 #Nm/rad
+        # damping = 0.1 #Nm/rad/s
         
-        # #Weaker implicit control (to make it easier to learn to control)
+        #Weaker implicit control, latest (verified to work in test env, jump a bit over 2m)
+        stall_torque = 1 #Nm
+        velocity_limit = 15 #rad/s 
+        stiffness = 5 #Nm/rad
+        damping = 0.06 #Nm/rad/s #original 0.05
+        
+        # #New experimental control for attitude stabilization
         # stall_torque = 1 #Nm
         # velocity_limit = 15 #rad/s 
-        # stiffness = 5 #Nm/rad
-        # damping = 0.05 #Nm/rad/s
+        # stiffness = 1  #Nm/rad
+        # damping = 0.1 #Nm/rad/s
 
         actuators = {
             "motors": ImplicitActuatorCfg(
@@ -79,6 +85,7 @@ class MarsJumperRobotCfg(ArticulationCfg):
                 damping=damping,
                 velocity_limit=velocity_limit,
                 effort_limit=stall_torque,
+                
             ),
         }
     
@@ -93,7 +100,7 @@ class MarsJumperRobotCfg(ArticulationCfg):
                 articulation_props=sim_utils.ArticulationRootPropertiesCfg(
                     enabled_self_collisions=True, 
                     solver_position_iteration_count=4, 
-                    solver_velocity_iteration_count=0
+                    solver_velocity_iteration_count=0 #if else then robot accumulates angular velocity for some reason
                 ),
         )
         

@@ -31,56 +31,8 @@ from isaaclab.actuators.actuator_cfg import ActuatorNetLSTMCfg, IdealPDActuatorC
 from isaaclab.assets.articulation.articulation_cfg import ArticulationCfg
 import gymnasium as gym # Import gymnasium
 
-ANYDRIVE_3_LSTM_ACTUATOR_CFG = ActuatorNetLSTMCfg(
-    joint_names_expr=[".*HAA", ".*HFE", ".*KFE"],
-    network_file=f"{ISAACLAB_NUCLEUS_DIR}/ActuatorNets/ANYbotics/anydrive_3_lstm_jit.pt",
-    saturation_effort=120.0,
-    effort_limit=80.0,
-    velocity_limit=7.5,
-)
 
 RPM2RADPS = 2.0 * torch.pi / 60.0
-IdealPD_ACTUATOR_CFG = IdealPDActuatorCfg(
-    joint_names_expr=[".*HAA", ".*HFE", ".*KFE"],
-    stiffness=20.0,
-    damping=1.0,
-    velocity_limit=470*RPM2RADPS,
-    effort_limit=20
-)
-
-
-ANYMAL_B_CFG = ArticulationCfg(
-    prim_path="/World/robot",
-    spawn=sim_utils.UsdFileCfg(
-        usd_path=f"{ISAACLAB_NUCLEUS_DIR}/Robots/ANYbotics/ANYmal-B/anymal_b.usd",
-        activate_contact_sensors=True,
-        rigid_props=sim_utils.RigidBodyPropertiesCfg(
-            disable_gravity=True,
-            retain_accelerations=False,
-            linear_damping=0.0,
-            angular_damping=0.0,
-            max_linear_velocity=1000.0,
-            max_angular_velocity=1000.0,
-            max_depenetration_velocity=1.0,
-        ),
-        articulation_props=sim_utils.ArticulationRootPropertiesCfg(
-            enabled_self_collisions=True, solver_position_iteration_count=4, solver_velocity_iteration_count=0
-        ),
-        # collision_props=sim_utils.CollisionPropertiesCfg(contact_offset=0.02, rest_offset=0.0),
-    ),
-    init_state=ArticulationCfg.InitialStateCfg(
-        pos=(0.0, 0.0, 0.6),
-        joint_pos={
-            ".*HAA": 0.0,  # all HAA
-            ".*F_HFE": 0.0,  # both front HFE
-            ".*H_HFE": 0.0,  # both hind HFE
-            ".*F_KFE": 0.0,  # both front KFE
-            ".*H_KFE": 0.0,  # both hind KFE
-        },
-    ),
-    actuators={"legs": IdealPD_ACTUATOR_CFG},
-    soft_joint_pos_limit_factor=0.95,
-)
 
 def design_scene():
     """Designs the scene."""
@@ -135,7 +87,7 @@ def run_simulator(sim: sim_utils.SimulationContext, entities: dict, origins: tor
         if sim_time > 1.0:
             target_angle = torch.full((1, 12), torch.pi * 0.1, device=sim.device) # Ensure target is on the correct device
         else:
-            target_angle = torch.zeros((1, 12), device=sim.device) # Ensure target is on the correct device
+            target_angle = robot.data.default_joint_pos.clone()
 
         robot.set_joint_position_target(target_angle)
 

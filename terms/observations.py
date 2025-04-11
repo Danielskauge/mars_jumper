@@ -7,13 +7,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from typing import TYPE_CHECKING
 from terms.phase import Phase
 import torch
-
-from isaaclab.managers import SceneEntityCfg
-from isaaclab.assets import Articulation
 
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedEnv, ManagerBasedRLEnv

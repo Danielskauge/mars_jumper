@@ -133,7 +133,6 @@ def plot_joint_data(time_log, target_logs, actual_logs, torque_logs, root_height
     root_height_ax.tick_params(axis='y', labelcolor=color_height)
     root_height_ax.grid(True, axis='y', linestyle=':', alpha=0.6)
     root_height_ax.yaxis.set_major_locator(plt.MaxNLocator(20))  # Increase number of y-axis ticks
-    root_height_ax.set_ylim(0, 0.2)  # Set y-axis limits
     root_height_ax.legend(loc='upper right')
     root_height_ax.set_title("Root Height")
 

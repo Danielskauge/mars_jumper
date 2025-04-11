@@ -17,7 +17,7 @@ from isaaclab.app import AppLauncher
 # add argparse arguments
 parser = argparse.ArgumentParser(description="Play a checkpoint of an RL agent from RL-Games.")
 parser.add_argument("--video", action="store_true", default=True, help="Record videos during training.")
-parser.add_argument("--video_length", type=int, default=1000, help="Length of the recorded video (in steps).")
+parser.add_argument("--video_length", type=int, default=500, help="Length of the recorded video (in steps).")
 parser.add_argument(
     "--disable_fabric", action="store_true", default=False, help="Disable fabric and use USD I/O operations."
 )
@@ -35,8 +35,6 @@ parser.add_argument(
     help="When no checkpoint provided, use the last saved model. Otherwise use the best saved model.",
 )
 parser.add_argument("--real-time", action="store_true", default=False, help="Run in real-time, if possible.")
-parser.add_argument("--wandb_run_id", type=str, default=None, help="WandB run ID to log video to")
-parser.add_argument("--wandb_project", type=str, default="mars_jumper", help="WandB project name")
 # append AppLauncher cli args
 AppLauncher.add_app_launcher_args(parser)
 # parse the arguments
@@ -211,17 +209,20 @@ def main():
 def save_video_to_wandb(video_folder, log_dir):
     with open(os.path.join(log_dir, "params/agent.yaml"), "r") as f:
         data = yaml.safe_load(f)
-    
-    run_id = data["params"]["config"]["wandb_run"]
+
+    run_id = data["params"]["config"]["wandb_run_id"]
+    run_name = data["params"]["config"]["wandb_run_name"]
     run_project = data["params"]["config"]["wandb_project"]
+    
     wandb.init(id=run_id, project=run_project, resume="must")
-    print(f"Logging video to WandB run: {run_id} in project: {run_project}")
+    
+    print(f"Logging video to WandB run: {run_name}, id: {run_id} in project: {run_project}")
     import glob
     video_files = glob.glob(os.path.join(video_folder, "*.mp4"))
     if not video_files:
         print(f"No video files found in {video_folder}")
         return
-    wandb.log({"video": wandb.Video(video_files[0], fps=20, format="mp4")})
+    wandb.log({"video": wandb.Video(video_files[0], fps=120, format="mp4")})
     wandb.finish()
 
 

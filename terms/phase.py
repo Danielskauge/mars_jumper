@@ -5,3 +5,4 @@ class Phase(IntEnum):
     TAKEOFF = 1
     FLIGHT = 2
     LANDING = 3 
+    

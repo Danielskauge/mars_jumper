@@ -1,37 +1,42 @@
 # sweep.yaml
-program: mars_jumper/train.py # Adjusted path
+program: train.py # Full path to interpreter + script
 method: grid
 metric:
-  name: results/mean_reward # Placeholder: Change to your actual optimization metric
+  name: Episode/running_success_rate # Placeholder: Change to your actual optimization metric
   goal: maximize
 parameters:
   # Agent parameters (from rl_games_ppo_cfg.yaml)
-  learning_rate:
-    values: [1e-3, 5e-4, 1e-4]
-  gamma:
-    values: [0.99, 0.995]
-  entropy_coef:
-    values: [0.0, 0.001, 0.0025]
-  e_clip:
-    values: [0.1, 0.2]
+  # learning_rate:
+  #   values: [1e-3, 5e-4, 1e-4]
+  # gamma:
+  #   values: [0.99, 0.995]
+  # entropy_coef:
+  #   values: [0.0, 0.001, 0.0025]
+  # e_clip:
+  #   values: [0.1, 0.2]
 
   # Environment parameters (from env_cfg.py - reward weights)
-  # Note: Use distinct names here to avoid clashes with agent config keys
-  env_reward_crouch_knee_angle_weight:
-    values: [0.5, 1.0, 1.5]
-  env_reward_crouch_hip_angle_weight:
-    values: [0.5, 1.0, 1.5]
-  env_reward_action_rate_l2_weight:
-    values: [-0.05, -0.1, -0.2]
+  # Use dot notation to target nested Hydra config parameters
+  # env.rewards.attitude_rotation.params.kernel:
+  #   values: ["inverse_linear", "exponential"]
+  # env.rewards.attitude_rotation.params.scale:
+  #   values: [0.2, 0.5, 1, 2, 4, 8]
+  # env.rewards.attitude_rotation.weight:
+  #   values: [0.1, 1]
+  env.rewards.relative_cmd_error.weight:
+    values: [0.1, 0.5, 1.01, 2.01]
+  env.rewards.relative_cmd_error.params.scale:
+    values: [1.1, 2.1, 4.1, 8.1]
+command:
+  - /workspace/isaaclab/_isaac_sim/kit/python/bin/python3 # Or use ${env}
+  - ${program}
+  # --- Required Argparse Flags (Hardcoded or from top-level vars if needed) ---
+  - "--task"
+  - "full-jump" # Hardcode the fixed task name
+  - "--project"
+  - "takeoff_cmd"             # Hardcode the fixed project name
+  - "--headless"
+  - "--wandb"
 
-  # Pass task name via command line equivalent for hydra
-  task:
-    value: MarsJumper # Ensure this matches your task name
-
-  # Ensure wandb is enabled for sweep runs
-  wandb:
-    value: True
-
-  # You might need to override other CLI args here if train.py expects them
-  # num_envs:
-  #   value: 1024 
+  # --- Hydra Overrides (Generated automatically from parameters above) ---
+  - ${args_no_hyphens}

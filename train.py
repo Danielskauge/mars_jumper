@@ -12,8 +12,13 @@ import atexit
 import signal
 import sys
 import subprocess
+import logging
 
 from isaaclab.app import AppLauncher
+
+# Suppress INFO messages from the TensorBoard logger
+# Set level to WARNING to only show warnings and errors
+logging.getLogger('tensorboard').setLevel(logging.WARNING)
 
 # add argparse arguments
 parser = argparse.ArgumentParser(description="Train an RL agent with RL-Games.")
@@ -30,8 +35,8 @@ parser.add_argument("--checkpoint", type=str, default=None, help="Path to model 
 parser.add_argument("--sigma", type=str, default=None, help="The policy's initial standard deviation.")
 parser.add_argument("--max_iterations", type=int, default=None, help="RL Policy training iterations.")
 parser.add_argument("--wandb", action="store_true", default=False, help="Whether to use wandb for logging.")
-parser.add_argument("--run_name", type=str, default=None, help="Name of the run.")
-parser.add_argument("--project_name", type=str, default="mars_jumper", help="Name of the project.")
+parser.add_argument("--run", type=str, default=None, help="Name of the run.")
+parser.add_argument("--project", type=str, default=None, help="Name of the project.")
 # Add new agent config arguments
 parser.add_argument("--horizon_length", type=int, default=None, help="Horizon length for PPO.")
 parser.add_argument("--num_minibatches", type=int, default=None, help="Number of minibatches for PPO.")
@@ -88,12 +93,14 @@ import isaaclab_tasks  # noqa: F401
 from isaaclab_tasks.utils.hydra import hydra_task_config
 
 import envs  # noqa: F401
-
 import wandb  # Import wandb
 
 @hydra_task_config(args_cli.task, "rl_games_cfg_entry_point")
 def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: dict):
     """Train with RL-Games agent."""
+    
+    print(f"args_cli.task: {args_cli.task}")
+    print(f"args_cli.project: {args_cli.project}")
 
     # Initialize wandb *before* configuring env/agent if using sweeps
     run = None
@@ -104,54 +111,24 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     if init_wandb:
         run = wandb.init(
-            project= args_cli.project_name,
+            project= args_cli.project,
             # config is automatically populated by sweep agent, or use agent_cfg if not a sweep
             sync_tensorboard=True,
             monitor_gym=args_cli.video,
             save_code=True,
-            name=args_cli.run_name, # Use provided name or let wandb generate default
+            name=args_cli.run , # Use provided name or let wandb generate default
             resume="allow",
-            id=args_cli.run_name, # Use name as ID for resuming
             settings=wandb.Settings(start_method="thread")
         )
     else:
         # Disable wandb if not rank 0 or --wandb not specified
         os.environ["WANDB_MODE"] = "disabled"
-
-    # --- Apply WandB Sweep Config ---
-    if init_wandb and wandb.run and wandb.run.sweep_id:
-        print("[INFO] Applying WandB sweep configuration...")
-        sweep_config = wandb.config
-
-        # Override agent_cfg params
-        if 'learning_rate' in sweep_config:
-            agent_cfg["params"]["config"]["learning_rate"] = sweep_config.learning_rate
-        if 'gamma' in sweep_config:
-            agent_cfg["params"]["config"]["gamma"] = sweep_config.gamma
-        if 'entropy_coef' in sweep_config:
-            agent_cfg["params"]["config"]["entropy_coef"] = sweep_config.entropy_coef
-        if 'e_clip' in sweep_config:
-            agent_cfg["params"]["config"]["e_clip"] = sweep_config.e_clip
-        # Add other agent params as needed...
-
-        # Override env_cfg params (example: reward weights)
-        # Make sure these reward terms exist in your RewardsCfg
-        if 'env_reward_crouch_knee_angle_weight' in sweep_config and hasattr(env_cfg.rewards, 'crouch_knee_angle'):
-             env_cfg.rewards.crouch_knee_angle.weight = sweep_config.env_reward_crouch_knee_angle_weight
-        if 'env_reward_crouch_hip_angle_weight' in sweep_config and hasattr(env_cfg.rewards, 'crouch_hip_angle'):
-             env_cfg.rewards.crouch_hip_angle.weight = sweep_config.env_reward_crouch_hip_angle_weight
-        if 'env_reward_action_rate_l2_weight' in sweep_config and hasattr(env_cfg.rewards, 'action_rate_l2'):
-             env_cfg.rewards.action_rate_l2.weight = sweep_config.env_reward_action_rate_l2_weight
-        # Add other env params as needed...
-        print("[INFO] WandB sweep configuration applied.")
-    # --- End Apply WandB Sweep Config ---
-
-
+        
+    print()
+        
     # override configurations with non-hydra CLI arguments
     env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
     env_cfg.sim.device = args_cli.device if args_cli.device is not None else env_cfg.sim.device
-
- 
     # randomly sample a seed if seed = -1
     if args_cli.seed == -1:
         args_cli.seed = random.randint(0, 10000)
@@ -184,11 +161,13 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     if args_cli.regularizer is not None:
         agent_cfg["params"]["config"]["regularizer"]["name"] = args_cli.regularizer
         
-    if args_cli.wandb is not None:
-        agent_cfg["params"]["config"]["wandb_run"] = args_cli.run_name
-        agent_cfg["params"]["config"]["wandb_project"] = args_cli.project_name
+    if args_cli.wandb:
+        agent_cfg["params"]["config"]["wandb"] = True
+        if run:
+            agent_cfg["params"]["config"]["wandb_run_id"] = run.id
+            agent_cfg["params"]["config"]["wandb_run_name"] = run.name
+        agent_cfg["params"]["config"]["wandb_project"] = args_cli.project
 
-    
     # Check if minibatch size is correct
     minibatch_size = agent_cfg["params"]["config"]["minibatch_size"]
     horizon_length = agent_cfg["params"]["config"]["horizon_length"]
@@ -222,10 +201,9 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     log_root_path = os.path.abspath(log_root_path)
     print(f"[INFO] Logging experiment in directory: {log_root_path}")
     # specify directory for logging runs (use run name if available from wandb/cli)
-    if args_cli.run_name is not None:
-        log_dir = datetime.now().strftime("%Y-%m-%d_%H-%M-%S") + "_" + args_cli.run_name
-    else:
-        log_dir = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    log_dir = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    if args_cli.wandb:
+        log_dir += "_" + run.name
 
     # set directory into agent config
     # logging directory path: <train_dir>/<full_experiment_name>
