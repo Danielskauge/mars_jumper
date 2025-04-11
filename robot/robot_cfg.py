@@ -83,7 +83,7 @@ class MarsJumperRobotCfg(ArticulationCfg):
         }
     
         spawn=sim_utils.UsdFileCfg(
-                usd_path=f"{os.getcwd()}/USD_files/parallell_spring_jumper/parallell_spring_jumper.usd",
+                usd_path=f"{os.getcwd()}/USD_files/moved_motor_usd/moved_motor_usd.usd",
                 activate_contact_sensors=True,
                 rigid_props=sim_utils.RigidBodyPropertiesCfg(
                     disable_gravity=False,

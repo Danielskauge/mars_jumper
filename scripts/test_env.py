@@ -29,7 +29,7 @@ import matplotlib.pyplot as plt
 
 DEG2RAD = np.pi/180.0
 
-abductor_angle = 0 * DEG2RAD
+abductor_angle = 30 * DEG2RAD
 hip_angle = -70 * DEG2RAD
 knee_angle = 140 * DEG2RAD
 
@@ -208,8 +208,8 @@ def run_simulator(sim: sim_utils.SimulationContext, entities: dict, origins: tor
         effective_count = count % log_duration_steps
         targets = initial_angle_targets
        
-        if effective_count > int(log_duration_steps/2):
-            targets = takeoff_angle_targets
+        # if effective_count > int(log_duration_steps/2):
+        #     targets = takeoff_angle_targets
 
         # Set joint position targets for all joints based on the current phase
         for joint_name, target_pos in targets.items():
