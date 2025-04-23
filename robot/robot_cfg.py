@@ -67,10 +67,10 @@ class MarsJumperRobotCfg(ArticulationCfg):
         # damping = 0.1 #Nm/rad/s
         
         #Weaker implicit control, latest (verified to work in test env, jump a bit over 2m)
-        stall_torque = 1 #Nm
-        velocity_limit = 15 #rad/s 
-        stiffness = 5 #Nm/rad
-        damping = 0.06 #Nm/rad/s #original 0.05
+        stall_torque = 2 #Nm
+        #velocity_limit = 500 #rad/s 
+        stiffness = 20 #Nm/rad (not sure if that's correct)
+        damping = 0.2 #Nm/rad/s #original 0.05
         
         # #New experimental control for attitude stabilization
         # stall_torque = 1 #Nm
@@ -83,14 +83,13 @@ class MarsJumperRobotCfg(ArticulationCfg):
                 joint_names_expr=[".*HAA", ".*HFE", ".*KFE"],
                 stiffness=stiffness,
                 damping=damping,
-                velocity_limit=velocity_limit,
                 effort_limit=stall_torque,
                 
             ),
         }
     
         spawn=sim_utils.UsdFileCfg(
-                usd_path=f"{os.getcwd()}/USD_files/parallell_spring_jumper/parallell_spring_jumper.usd",
+                usd_path=f"{os.getcwd()}/USD_files/moved_motor_usd/moved_motor_usd.usd",
                 activate_contact_sensors=True,
                 rigid_props=sim_utils.RigidBodyPropertiesCfg(
                     disable_gravity=False,

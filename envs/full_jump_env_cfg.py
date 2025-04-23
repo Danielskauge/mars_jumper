@@ -28,19 +28,18 @@ DEG2RAD = np.pi/180
 @configclass
 class CommandRangesCfg:
     """Configuration for command ranges."""
-    mars_gravity_abs = 3.721
-    earth_gravity_abs = 9.81
+    mars_gravity_abs = 3.721    
     initial_target_height = 0.5 #m
-    initial_vel = 2.2147 #float(np.sqrt(earth_gravity_abs * initial_target_height)) #m/s
+    initial_vel = 2.2 #float(np.sqrt(mars_gravity_abs * initial_target_height)) #m/s
     
-    final_target_height = 2 #m
+    final_target_height = 1.5 #m
     final_vel = float(np.sqrt(mars_gravity_abs * final_target_height)) #m/s
     
     initial_pitch_range: Tuple[float, float] = (0.0, 0.0) # Initial pitch range
     initial_magnitude_range: Tuple[float, float] = (initial_vel, initial_vel) # Initial magnitude range
     
     final_pitch_range: Tuple[float, float] = (0.0, 0.0) # Final pitch range
-    final_magnitude_range: Tuple[float, float] = (initial_vel, 0.8*final_vel) # Final magnitude range
+    final_magnitude_range: Tuple[float, float] = (initial_vel, final_vel) # Final magnitude range
     
 @configclass
 class MySceneCfg(InteractiveSceneCfg):
@@ -95,11 +94,7 @@ class ObservationsCfg:
         base_height = ObservationTermCfg(func=mdp.base_pos_z, noise=Unoise(n_min=-0.05, n_max=0.05))
         base_lin_vel = ObservationTermCfg(func=mdp.base_lin_vel, noise=Unoise(n_min=-0.05, n_max=0.05))
         base_ang_vel = ObservationTermCfg(func=mdp.base_ang_vel, noise=Unoise(n_min=-0.05, n_max=0.05))
-        #base_quat = ObservationTermCfg(func=mdp.root_quat_w, noise=Unoise(n_min=-0.05, n_max=0.05))
-        projected_gravity = ObservationTermCfg(
-            func=mdp.projected_gravity,
-            noise=Unoise(n_min=-0.05, n_max=0.05),
-        )
+        base_rotation_vector = ObservationTermCfg(func=observations.base_rotation_vector)
         joint_pos = ObservationTermCfg(func=mdp.joint_pos_rel, noise=Unoise(n_min=-0.01, n_max=0.01))
         joint_vel = ObservationTermCfg(func=mdp.joint_vel_rel, noise=Unoise(n_min=-1.5, n_max=1.5))
         previous_actions = ObservationTermCfg(func=mdp.last_action)        
@@ -131,38 +126,36 @@ class RewardsCfg:
     There is no built in implementation of per-episode rewards.
     """
     #TAKEOFF PHASE
-    # cmd_error = RewardTermCfg(func=rewards.cmd_error,
-    #                           params={"scale": 1, "kernel": "exponential"},
-    #                           weight=1,
-    # )
     relative_cmd_error = RewardTermCfg(func=rewards.relative_cmd_error,
-                                       params={"scale": 2.0, "kernel": "inverse_linear"},
+                                       params={"scale": 7.0, "kernel": "exponential"},
                                        weight=2.0,
     )
-    flat_orientation = RewardTermCfg(func=mdp.flat_orientation_l2, 
-                                     weight= -0.1)
-    
-    joint_vel_l1 = RewardTermCfg(func=mdp.joint_vel_l1,
-                                 params={"asset_cfg": SceneEntityCfg("robot")},
-                                 weight= -0.001,
-    )
-    action_rate_l2 = RewardTermCfg(func=mdp.action_rate_l2, 
-                                   weight= -0.01)
+
 
     #FLIGHT PHASE
+    # attitude_error_at_transition_to_landing = RewardTermCfg(func=rewards.attitude_error_at_transition_to_landing, 
+    #                                                         params={"scale": 11.0},
+    #                                                         weight=1)
+    # attitude_error_on_way_down = RewardTermCfg(func=rewards.attitude_error_on_way_down, 
+    #                                           params={"scale": 11.0},
+    #                                           weight=1)
     attitude_rotation = RewardTermCfg(func=rewards.attitude_rotation_magnitude, 
-                                      params={"kernel": "inverse_linear", "scale": 1},
-                                      weight=2)
+                                      params={"kernel": "inverse_quadratic", "scale": 11.0},
+                                      weight=1)
     
-    root_ang_vel_l1 = RewardTermCfg(func=rewards.ang_vel_l1, 
-                                    weight=-0.001)
-
     # is_alive_in_landing = RewardTermCfg(func=custom_rewards.is_alive, 
     #                                     params={"phases": [Phase.LANDING, Phase.FLIGHT]},
     #                                     weight=1)
-    is_terminated = RewardTermCfg(func=mdp.is_terminated_term, weight= -0.1, params={"term_keys": ["base_contact", "bad_orientation", "time_out"]})
+    is_terminated = RewardTermCfg(func=mdp.is_terminated_term, weight= -0.5, params={"term_keys": ["base_contact", "bad_orientation"]})
     
     #ALL PHASES
+    joint_vel_l1 = RewardTermCfg(func=mdp.joint_vel_l1,
+                                 params={"asset_cfg": SceneEntityCfg("robot")},
+                                 weight= 0.0#-0.001,
+    )
+    action_rate_l2 = RewardTermCfg(func=mdp.action_rate_l2, 
+                                   weight= 0.0#-0.01)
+    )
     dof_pos_limits = RewardTermCfg(func=mdp.joint_pos_limits, 
                                    weight=-0.01)
     
@@ -179,7 +172,6 @@ class RewardsCfg:
 class TerminationsCfg:
     """Termination terms for the MDP."""
     landed = TerminationTermCfg(func=terminations.landed, time_out=False)
-    entered_flight = TerminationTermCfg(func=terminations.entered_flight, time_out=False)
     time_out = TerminationTermCfg(func=mdp.time_out, time_out=True)
     base_contact = TerminationTermCfg(func=mdp.illegal_contact, params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=[".*THIGH.*", ".*SHANK.*", ".*HIP.*", ".*base.*"]), "threshold": 0.2})
     bad_orientation = TerminationTermCfg(func=mdp.bad_orientation, params={"asset_cfg": SceneEntityCfg("robot", body_names="base"), "limit_angle": np.pi/3})
@@ -189,13 +181,13 @@ class TerminationsCfg:
 class CurriculumCfg:
     """Curriculum terms."""
 
-    # command_range_progression = CurriculumTermCfg(
-    #     func=custom_curriculums.progress_command_ranges,
-    #     params={
-    #         "num_curriculum_levels": 20,
-    #         "success_rate_threshold": 0.9,
-    #     },
-    # )
+    command_range_progression = CurriculumTermCfg(
+        func=curriculums.progress_command_ranges,
+        params={
+            "num_curriculum_levels": 50,
+            "success_rate_threshold": 0.9,
+        },
+    )
         
 @configclass
 class FullJumpEnvCfg(ManagerBasedRLEnvCfg):
@@ -216,8 +208,11 @@ class FullJumpEnvCfg(ManagerBasedRLEnvCfg):
         self.takeoff_magnitude_ratio_error_threshold = 0.1
         self.takeoff_angle_error_threshold = 10*DEG2RAD
         
+        #Flight success criteria
+        self.flight_angle_error_threshold = 15*DEG2RAD
+        
         self.crouch_to_takeoff_height_trigger = 0.08 #0.22 #Threshold for transitioning from takeoff to flight phase
-        self.takeoff_to_flight_height_trigger = 0.25 #robot max standing height is 22cm
+        self.takeoff_to_flight_height_trigger = 0.22 #robot max standing height is 22cm
         self.flight_to_landing_height_trigger = 0.30 #robot might come in tiled, so we give it a bit more room
         
         self.real_time_control_dt = 1/100

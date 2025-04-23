@@ -1,0 +1,45 @@
+12534,MarkQosNameValue,RivermaxEnabled,0
+12534,MarkQosNameValue,L4S Enabled (Downstream),0
+12534,MarkQosNameValue,DVS P4VirtualChangelist,35031330
+12534,MarkQosNameValue,Format,H264
+12534,MarkQosNameValue,HostName,U16-I3-A03-04-4
+12534,MarkQosNameValue,Windows Version,non-Windows
+12534,MarkQosNameValue,VideoEncoderClassId,0xC7B7
+12534,MarkQosNameValue,Streaming Mode,1920x1080p60
+12534,MarkQosNameValue,GPU Detail,ANGLE Metal Renderer: Apple M2
+12534,MarkQosNameValue,IsCoProc,0
+12534,MarkQosNameValue,DVS Branch,gcomp/rel/gs_04_69
+12534,MarkQosNameValue,DriverBranch,NVIDIA UNIX Open Kernel Module for x86_64  560.35.03  Release Build  (dvs-builder@U16-I1-N07-12-3)  Fri Aug 16 21:42:42 UTC 2024
+12534,MarkQosNameValue,Device,NVIDIA GeForce RTX 3070
+12534,MarkQosNameValue,AdapterRefreshRate,60.0
+12534,MarkQosNameValue,L4S Enabled for Video (Downstream),0
+12534,MarkQosNameValue,L4S Enabled for Audio (Downstream),0
+12534,MarkQosNameValue,AdapterWidth,1280
+12534,MarkQosNameValue,LtrEnabled,0
+12534,MarkQosNameValue,AllTransitSelectionValuesForwarded,
+12534,MarkQosNameValue,AdapterHeight,720
+12534,MarkQosNameValue,TransitSelectionValueForwarded,0
+12534,MarkQosNameValue,L4S Enabled (Upstream),0
+12534,MarkQosNameValue,SurfaceBitDepth,8
+12534,MarkQosNameValue,AllTransitSelectionValuesApplied,
+12534,MarkQosNameValue,EncoderInputSurfaceFormat,invalid_format
+12534,MarkQosNameValue,StreamProfileType,Gaming_LAN
+12534,MarkQosNameValue,DriverVersion,560.35
+12534,MarkQosNameValue,TransitSelectionValueApplied,0
+12534,MarkQosNameValue,DataChannelMode,DcSCTP
+12534,MarkQos,StreamServerBackendMode is 2
+12534,MarkQos,stream 0 nvtime::sessionStartTime[us] on server: 263170611752
+12534,MarkQos,RL QOS disabled for stream: 0
+12534,MarkQos,Max Fps is 60
+12534,MarkQos,NvRtcClient Browser name: Chromium, Browser version: 130.0.6723.152
+12534,MarkQos,Stream[0]: Client display[-1] resolution : {physical : 2560x1440@60, logical : 2560x1440@60} at frame#0 topology: 3
+12534,MarkQos,Stream[0]: Client display[-1] resolution : {physical : 2560x1440@60, logical : 2560x1440@60} at frame#0 topology: 3
+12534,MarkGsBlobStats,0x1B01000000000000030003001C01000000000000000000000C020000010000000000000000000000000000000000000000000202000001000000000000000FFE1B01000000000000020003001B01000000000000000002001B01000000000000020000001B01000000000000030002001B0100000000000002000300
+13016,MarkQosServerControlChannelStatsV0,181683138,0,785,3,297
+13016,MarkQosServerControlChannelStatsV0,181683138,0,797,1,5
+13016,MarkQosServerControlChannelStatsV0,181683138,0,798,1,1032
+13016,MarkQosServerControlChannelStatsV0,181683138,0,800,6,72
+13016,MarkQosServerControlChannelStatsV0,181683138,0,801,1,12
+13042,MarkQos,Number of delayed commands: 0
+13042,MarkQos,Audio drift stats - Ratio: 0.000000, Total Drift: 0 ms, Packet Count: 0
+13042,MarkGsBlobStats,0x19010000000000000C0005F0BFF621F3501E85AA0500000080070000400400003C000000010000000000000002000000020000000F0000000F0000000F0000000000000000000000000000901302000100000001000000010000000D0000000000000000000000000000000000000000000000000000000000000000000000

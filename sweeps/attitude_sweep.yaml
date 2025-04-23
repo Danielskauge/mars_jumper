@@ -1,0 +1,27 @@
+# sweep.yaml
+program: ./train.py # Full path to interpreter + script
+method: grid
+metric:
+  name: Episode/success_rate # Placeholder: Change to your actual optimization metric
+  goal: maximize
+parameters:
+
+  env.rewards.attitude_rotation.params.scale:
+    values: [0.5,1.0,2.0,3.0,5.0]
+
+  env.rewards.attitude_rotation.params.kernel:
+    values: ["inverse_linear", "exponential", "inverse_quadratic"]
+
+command:
+  - /workspace/isaaclab/_isaac_sim/kit/python/bin/python3 # Or use ${env}
+  - ${program}
+  # --- Required Argparse Flags (Hardcoded or from top-level vars if needed) ---
+  - "--task"
+  - "attitude" # Hardcode the fixed task name
+  - "--project"
+  - "attitude"             # Hardcode the fixed project name
+  - "--headless"
+  - "--wandb"
+
+  # --- Hydra Overrides (Generated automatically from parameters above) ---
+  - ${args_no_hyphens}

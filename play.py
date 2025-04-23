@@ -8,6 +8,8 @@
 """Launch Isaac Sim Simulator first."""
 
 import argparse
+import os
+import shutil
 
 import wandb
 import yaml
@@ -77,6 +79,11 @@ def main():
     env_cfg = parse_env_cfg(
         args_cli.task, device=args_cli.device, num_envs=args_cli.num_envs, use_fabric=not args_cli.disable_fabric
     )
+    
+    # Set the command ranges to the final ranges
+    env_cfg.command_ranges.initial_magnitude_range = (env_cfg.command_ranges.final_magnitude_range[0], env_cfg.command_ranges.final_magnitude_range[1])
+    env_cfg.command_ranges.initial_pitch_range = (env_cfg.command_ranges.final_pitch_range[0], env_cfg.command_ranges.final_pitch_range[1])
+    
     agent_cfg = load_cfg_from_registry(args_cli.task, "rl_games_cfg_entry_point")
 
     # specify directory for logging experiments
@@ -119,6 +126,12 @@ def main():
     # wrap for video recording
     if args_cli.video:
         video_folder = os.path.join(log_root_path, log_dir, "videos", "play")
+        # Delete existing video folder to ensure a new one is created
+        if os.path.exists(video_folder):
+            shutil.rmtree(video_folder)
+        # Ensure the base directory exists
+        os.makedirs(video_folder, exist_ok=True)
+
         video_kwargs = {
             "video_folder": video_folder,
             "step_trigger": lambda step: step == 0,

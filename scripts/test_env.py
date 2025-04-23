@@ -108,10 +108,10 @@ def plot_joint_data(time_log, target_logs, actual_logs, torque_logs, root_height
         axs[i].tick_params(axis='y', labelcolor=color_angle_target)
         axs[i].grid(True, axis='y', linestyle=':', alpha=0.6) # Angle grid
 
-        # Create a secondary y-axis (right) for torque
+        # Create a secondary y-axis (right) for torque/effort
         ax_torque = axs[i].twinx()
         color_torque = 'tab:red'
-        ax_torque.set_ylabel("Torque (Nm)", color=color_torque)
+        ax_torque.set_ylabel("Applied Torque (Nm)", color=color_torque)
         ax_torque.plot(time_log, torque_logs[name], label=f'{name} Applied Torque', color=color_torque, linestyle='-.')
         ax_torque.tick_params(axis='y', labelcolor=color_torque)
         # ax_torque.grid(True, axis='y', linestyle='--', alpha=0.6) # Optional torque grid
@@ -224,7 +224,7 @@ def run_simulator(sim: sim_utils.SimulationContext, entities: dict, origins: tor
             
             # Log target and actual angles for selected joints
             current_joint_pos = robot.data.joint_pos # Get current positions once
-            current_applied_torque = robot.data.applied_torque # Get current applied torques once
+            current_applied_torque = robot.data.applied_torque # Get current applied torques once (Reverted)
             current_root_pos_w = robot.data.root_pos_w # Get current root position once
             root_height_log.append(current_root_pos_w[0, 2].item()) # Log root height
 
@@ -234,9 +234,9 @@ def run_simulator(sim: sim_utils.SimulationContext, entities: dict, origins: tor
                  # Assuming only one robot instance (index 0)
                  actual_angle = current_joint_pos[0, joint_idx].item()
                  actual_angle_logs[name].append(actual_angle)
-                 # Log applied torque
-                 applied_torque = current_applied_torque[0, joint_idx].item()
-                 applied_torque_logs[name].append(applied_torque)
+                 # Log applied torque/force
+                 applied_torque = current_applied_torque[0, joint_idx].item() # Reverted
+                 applied_torque_logs[name].append(applied_torque) # Use the same log dict name for plotting compatibility (Reverted)
         # --- End Logging Logic ---
 
         # Write all commands to sim

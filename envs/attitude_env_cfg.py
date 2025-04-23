@@ -14,7 +14,7 @@ from terms import rewards as custom_rewards
 from terms import observations
 from robot.robot_cfg import MarsJumperRobotCfg
 from terms import events as custom_events
-MAX_EPISODE_LENGTH_S = 4
+from terms import terminations as custom_terminations
 
 @configclass
 class MySceneCfg(InteractiveSceneCfg):
@@ -44,11 +44,12 @@ class ObservationsCfg:
         #base_height = ObservationTermCfg(func=mdp.base_pos_z, noise=Unoise(n_min=-0.05, n_max=0.05))
         base_lin_vel = ObservationTermCfg(func=mdp.base_lin_vel, noise=Unoise(n_min=-0.05, n_max=0.05))
         base_ang_vel = ObservationTermCfg(func=mdp.base_ang_vel, noise=Unoise(n_min=-0.05, n_max=0.05))
-        base_quat = ObservationTermCfg(func=mdp.root_quat_w, params={"make_quat_unique": True}, noise=Unoise(n_min=-0.05, n_max=0.05))
+        #base_quat = ObservationTermCfg(func=mdp.root_quat_w, params={"make_quat_unique": True}, noise=Unoise(n_min=-0.05, n_max=0.05))
+        base_rotation_vector = ObservationTermCfg(func=observations.base_rotation_vector)
         joint_pos = ObservationTermCfg(func=mdp.joint_pos_rel, noise=Unoise(n_min=-0.01, n_max=0.01))
         joint_vel = ObservationTermCfg(func=mdp.joint_vel_rel, noise=Unoise(n_min=-1.5, n_max=1.5))
-        #previous_actions = ObservationTermCfg(func=mdp.last_action)
-        #has_taken_off = ObservationTermCfg(func=observations.has_taken_off)
+        previous_actions = ObservationTermCfg(func=mdp.last_action)
+        has_taken_off = ObservationTermCfg(func=observations.has_taken_off)
         
 
         def __post_init__(self):
@@ -86,11 +87,11 @@ class EventCfg:
 class RewardsCfg:
     """Rewards are computed at each step of the environment."""
     attitude_rotation = RewardTermCfg(func=custom_rewards.attitude_rotation_magnitude, 
-                                      params={"kernel": "inverse_linear", "scale": 1}, 
-                                      weight=2)
+                                      params={"kernel": "inverse_quadratic", "scale": 11.0}, 
+                                      weight=1)
     
     root_ang_vel_l1 = RewardTermCfg(func=custom_rewards.ang_vel_l1, 
-                                    weight=-0.001)
+                                    weight=-0.0) #-0.001
     #change_joint_direction = RewardTermCfg(func=custom_rewards.change_joint_direction_penalty, weight=-0.01)
     joint_vel_l2 = RewardTermCfg(func=mdp.joint_vel_l2,
                                  params={"asset_cfg": SceneEntityCfg("robot", body_names=".*")},
@@ -131,7 +132,6 @@ class AttitudeEnvCfg(ManagerBasedRLEnvCfg):
     def __post_init__(self):
         self.real_time_control_dt = 1/100
         self.sim.dt = 1/400
-        self.episode_length_s = MAX_EPISODE_LENGTH_S
         self.viewer = ViewerCfg(
             eye=[0, 0.5, 0.04],
             lookat=[0, 0, 0],
@@ -140,8 +140,9 @@ class AttitudeEnvCfg(ManagerBasedRLEnvCfg):
             resolution=(1280, 720),
         )
         
-        self.angle_threshold = 0.2  # (rad), for success calculation
-        self.duration_threshold = 1.0  # seconds, for success calculation
+        self.episode_length_s = 5
+        self.success_angle_threshold = np.pi/16
+        self.success_duration_threshold = 1.0   
         
         self.sim.gravity = (0.0, 0.0, 0.0)
         self.decimation = int(self.real_time_control_dt / self.sim.dt)

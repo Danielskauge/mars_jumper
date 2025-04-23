@@ -21,6 +21,7 @@ from isaaclab.sensors import ContactSensor
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
     from envs.env import MarsJumperEnv
+    from envs.attitude_env import AttitudeEnv
 from terms.phase import Phase
 
 def self_collision(
@@ -65,7 +66,5 @@ def entered_flight(
     """Terminate when the robot enters the flight phase."""
     return env.jump_phase == Phase.FLIGHT
 
-    
-    
-    
+
     

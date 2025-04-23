@@ -21,7 +21,7 @@ from isaaclab.sensors import ContactSensor
 from isaaclab.envs import ManagerBasedRLEnv
 from isaaclab.envs import mdp
 from isaaclab.assets import Articulation
-from terms.utils import convert_command_to_euclidean_vector
+from terms.utils import convert_command_to_euclidean_vector, get_center_of_mass_lin_vel
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
     from envs.env import MarsJumperEnv
@@ -77,7 +77,7 @@ def cmd_error(env: ManagerBasedRLEnv, scale: float = 0.1, kernel: str = "inverse
     takeoff_envs = env.jump_phase == Phase.TAKEOFF
     cmd = env.command[takeoff_envs]
     cmd_vec = convert_command_to_euclidean_vector(cmd)
-    robot_vel_vec = env.robot.data.root_com_lin_vel_w[takeoff_envs]
+    robot_vel_vec = get_center_of_mass_lin_vel(env)[takeoff_envs]
     reward_tensor = torch.zeros(env.num_envs, device=env.device)
     relative_error = torch.norm(robot_vel_vec - cmd_vec, dim=-1) / torch.norm(cmd_vec, dim=-1)
     takeoff_rewards = torch.zeros_like(relative_error)
@@ -100,7 +100,7 @@ def cmd_error(env: ManagerBasedRLEnv, scale: float = 0.1, kernel: str = "inverse
     
     return reward_tensor
 
-def relative_cmd_error(env: ManagerBasedRLEnv, scale: float = 0.1, kernel: str = "inverse_linear") -> torch.Tensor:
+def relative_cmd_error(env: ManagerBasedRLEnv, scale: float = 0.1, kernel: str = Literal["exponential", "inverse_linear", "inverse_square"]) -> torch.Tensor:
     """Computes reward based on relative error between robot's velocity and commanded takeoff vector.
     
     Similar to cmd_error() but normalizes error by command magnitude to be scale-invariant.
@@ -123,7 +123,7 @@ def relative_cmd_error(env: ManagerBasedRLEnv, scale: float = 0.1, kernel: str =
     
     cmd = env.command[takeoff_envs]
     cmd_vec = convert_command_to_euclidean_vector(cmd)
-    robot_vel_vec = env.robot.data.root_com_lin_vel_w[takeoff_envs]
+    robot_vel_vec = get_center_of_mass_lin_vel(env)[takeoff_envs]
     reward_tensor = torch.zeros(env.num_envs, device=env.device)
     relative_error = torch.norm(robot_vel_vec - cmd_vec, dim=-1) / torch.norm(cmd_vec, dim=-1)
     takeoff_rewards = torch.zeros_like(relative_error)
@@ -600,7 +600,7 @@ def feet_slide(env, sensor_cfg: SceneEntityCfg, asset_cfg: SceneEntityCfg = Scen
     reward = torch.sum(body_vel.norm(dim=-1) * contacts, dim=1)
     return reward
 
-def is_alive(env: ManagerBasedRLEnv, phases: list[Phase]) -> torch.Tensor:
+def is_alive(env: ManagerBasedRLEnv, phases: list[Phase] = [Phase.LANDING]) -> torch.Tensor:
     """Reward for being alive during the specified phases"""
     # Initialize as boolean tensor
     active_envs = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
@@ -634,6 +634,27 @@ def liftoff_vertical_velocity(env: MarsJumperEnv, shape: str = "linear") -> torc
         reward[transitioned_to_flight] = liftoff_reward
 
     return reward
+
+def attitude_error_on_way_down(env: ManagerBasedRLEnv, scale: float | int = 1.0) -> torch.Tensor:
+    """Rewards for no attitude rotation for robot in flight phase when going downwards. Uses inverse quadratic kernel."""
+    reward_tensor = torch.zeros(env.num_envs, device=env.device)
+    flight_envs = env.jump_phase == Phase.FLIGHT
+    reward_envs = flight_envs & (get_center_of_mass_lin_vel(env)[:, 2] < 0.01)
+    quat = env.robot.data.root_quat_w[reward_envs]
+    w = quat[:, 0]
+    angle = 2 * torch.acos(torch.clamp(w, min=-1.0, max=1.0))
+    reward_tensor[reward_envs] = 1/(1 + scale * torch.abs(angle)**2)
+    return reward_tensor
+
+def attitude_error_at_transition_to_landing(env: ManagerBasedRLEnv, scale: float | int = 1.0) -> torch.Tensor:
+    """Rewards for no attitude rotation for robot at transition to landing. Uses inverse quadratic kernel."""
+    reward_tensor = torch.zeros(env.num_envs, device=env.device)
+    reward_envs = (env.jump_phase == Phase.LANDING) & (env.prev_jump_phase == Phase.FLIGHT)
+    quat = env.robot.data.root_quat_w[reward_envs]
+    w = quat[:, 0]
+    angle = 2 * torch.acos(torch.clamp(w, min=-1.0, max=1.0))
+    reward_tensor[reward_envs] = 1/(1 + scale * torch.abs(angle)**2)
+    return reward_tensor
 
 def attitude_rotation_magnitude(env: ManagerBasedRLEnv, kernel: str = "inverse_linear", scale: float | int = 1.0) -> torch.Tensor:
     """Penalize any rotation from upright orientation using rotation vector magnitude.

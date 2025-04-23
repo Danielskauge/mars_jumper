@@ -7,18 +7,28 @@
 
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING
+
+from numpy import indices
+from isaaclab.assets.articulation.articulation import Articulation
+from isaaclab.managers.scene_entity_cfg import SceneEntityCfg
 from terms.phase import Phase
 import torch
-
+import isaaclab.utils.math as math_utils
+from terms.utils import get_center_of_mass_lin_vel
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedEnv, ManagerBasedRLEnv
 
+def center_of_mass_lin_vel(env: ManagerBasedEnv) -> torch.Tensor:
+    """Observation that returns the center of mass linear velocity.
+    """
+    return get_center_of_mass_lin_vel(env)
 
 def has_taken_off(
     env: ManagerBasedEnv, 
 ) -> torch.Tensor:
-    """Observation that indicates whether the robot has taken off.
+    """Observation that indices whether the robot has taken off.
     
     The observation returns 1.0 if the robot has transitioned to flight or landing,
     and 0.0 otherwise. 
@@ -34,7 +44,29 @@ def has_taken_off(
         return torch.zeros(env.num_envs, 1, device=env.device)
     
     return (env._phase_buffer == (Phase.FLIGHT | Phase.LANDING)).float().unsqueeze(-1)
+
+def base_rotation_vector(
+    env: ManagerBasedRLEnv,
+) -> torch.Tensor:
+    """Observation that returns the base rotation vector.
+    """
+    robot: Articulation = env.scene[SceneEntityCfg("robot").name]
+    quat = robot.data.root_quat_w
+    quat = math_utils.quat_unique(quat)
+    w = quat[:, 0]
+    x = quat[:, 1]
+    y = quat[:, 2]
+    z = quat[:, 3]
     
+    angle = 2 * torch.acos(torch.clamp(w, min=-1.0, max=1.0))
+    sin_angle_2 = torch.sin(angle/2)
+    
+    # Avoid division by zero
+    mask = sin_angle_2 != 0
+    rot_vec = torch.zeros_like(quat[:, 1:])
+    rot_vec[mask] = angle[mask].unsqueeze(-1) * torch.stack([x[mask], y[mask], z[mask]], dim=-1) / (sin_angle_2[mask].unsqueeze(-1))
+    
+    return rot_vec
 
 def takeoff_vel_vec_cmd(
     env: ManagerBasedRLEnv,

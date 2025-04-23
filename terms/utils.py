@@ -15,6 +15,18 @@ from isaaclab.assets import Articulation
 
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedEnv, ManagerBasedRLEnv
+    
+def get_center_of_mass_lin_vel(env: ManagerBasedEnv) -> torch.Tensor:
+    """
+    Returns the center of mass linear velocity of the robot.
+    Returns a tensor of shape (num_envs, 3)
+    """
+    robot: Articulation = env.scene[SceneEntityCfg("robot").name]
+    total_mass = torch.sum(robot.data.default_mass, dim=1).unsqueeze(-1).to(env.device) # Shape: (num_envs, 1)
+    masses = robot.data.default_mass.unsqueeze(-1).to(env.device) # Shape: (num_envs, num_bodies, 1)
+    weighed_lin_vels = robot.data.body_com_lin_vel_w * masses # Shape: (num_envs, num_bodies, 3)
+    com_lin_vel = torch.sum(weighed_lin_vels, dim=1) / total_mass # Shape: (num_envs, 3)
+    return com_lin_vel
 
 def change_reward_weight(env: ManagerBasedEnv, reward_name: str, new_weight: float) -> None:
     """Change the weight of a reward term in the environment.
@@ -44,7 +56,7 @@ def calculate_takeoff_errors(
     """
 
     angle_error = torch.acos(torch.sum(command_vec * takeoff_vec, dim=-1) / (torch.norm(command_vec, dim=-1) * torch.norm(takeoff_vec, dim=-1)))
-    magnitude_ratio = takeoff_vec[:, 2] / command_vec[:, 2]
+    magnitude_ratio = torch.norm(takeoff_vec, dim=-1) / torch.norm(command_vec, dim=-1)
     return angle_error, magnitude_ratio
 
 def convert_command_to_euclidean_vector(command: torch.Tensor) -> torch.Tensor:
@@ -79,6 +91,7 @@ def update_jump_phase(
 ) -> None:
     """Update the robot phase for the specified environments"""
     base_height = env.robot.data.root_pos_w[:, 2]
+    base_com_vertical_vel = get_center_of_mass_lin_vel(env)[:, 2]
     
     crouch_envs = env.jump_phase == Phase.CROUCH
     takeoff_envs = env.jump_phase == Phase.TAKEOFF
@@ -88,8 +101,8 @@ def update_jump_phase(
     
     env.jump_phase[crouch_envs & (base_height > env.cfg.crouch_to_takeoff_height_trigger)] = Phase.TAKEOFF
     env.jump_phase[takeoff_envs & (base_height > env.cfg.takeoff_to_flight_height_trigger)] = Phase.FLIGHT
-    env.jump_phase[flight_envs & (base_height < env.cfg.flight_to_landing_height_trigger)] = Phase.LANDING
-
+    neg_vertical_vel_envs = base_com_vertical_vel < 0.0
+    env.jump_phase[flight_envs & (base_height < env.cfg.flight_to_landing_height_trigger) & neg_vertical_vel_envs] = Phase.LANDING
 
 def log_phase_info(env: ManagerBasedEnv, extras: dict):
     """Logs the distribution of phases and average height per phase to the extras dict.

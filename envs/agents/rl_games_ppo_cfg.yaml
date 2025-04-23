@@ -23,7 +23,7 @@
           sigma_init:
             name: const_initializer
             val: 0 #does this mean variance starts at 0 or 1?
-          fixed_sigma: True
+          fixed_sigma: true
         bounds_loss_coef: 0.1
       mlp:
         units: [256, 128, 64]
@@ -60,7 +60,7 @@
       schedule_type: legacy
       kl_threshold: 0.01
       score_to_win: 20000
-      max_epochs: 200
+      max_epochs: 400
       save_best_after: 100
       save_frequency: 50
       grad_norm: 1.0

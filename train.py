@@ -129,6 +129,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # override configurations with non-hydra CLI arguments
     env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
     env_cfg.sim.device = args_cli.device if args_cli.device is not None else env_cfg.sim.device
+    if args_cli.device is not None:
+        agent_cfg["params"]["config"]["device"] = args_cli.device
+        agent_cfg["params"]["config"]["device_name"] = args_cli.device
+    
     # randomly sample a seed if seed = -1
     if args_cli.seed == -1:
         args_cli.seed = random.randint(0, 10000)
@@ -213,15 +217,26 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # Log final configs to WandB if initialized
     if init_wandb and run:
             # Convert env_cfg to a nested dictionary before logging
-            env_dict = class_to_dict(env_cfg) # Log potentially modified env_cfg
+            rewards_dict = class_to_dict(env_cfg.rewards)
+            termination_dict = class_to_dict(env_cfg.terminations)
+            network_dict = class_to_dict(agent_cfg["params"]["network"])
+            if hasattr(env_cfg, "curriculum"):
+                curriculum_dict = class_to_dict(env_cfg.curriculum)
+                run.config.update({"curriculum": curriculum_dict}, allow_val_change=True) # Log curriculum
+            if hasattr(env_cfg, "success_criteria"):
+                success_criteria_dict = class_to_dict(env_cfg.success_criteria)
+                run.config.update({"success_criteria": success_criteria_dict}, allow_val_change=True) # Log success criteria
+            if hasattr(env_cfg, "command_ranges"):
+                command_ranges_dict = class_to_dict(env_cfg.command_ranges)
+                run.config.update({"command_ranges": command_ranges_dict}, allow_val_change=True) # Log command ranges
 
-            # Update run config with potentially modified agent/env params and other info
             run.config.update(agent_cfg["params"]["config"], allow_val_change=True) # Allow changes from sweep
             run.config.update({"sim_freq": int(1/env_cfg.sim.dt)})
             run.config.update({"real_time_control_dt": int(1/env_cfg.real_time_control_dt)})
             run.config.update({"num_envs": env_cfg.scene.num_envs})
-            run.config.update({"env": env_dict}, allow_val_change=True) # Allow changes from sweep
-
+            run.config.update({"rewards": rewards_dict}, allow_val_change=True) # Allow changes from sweep
+            run.config.update({"terminations": termination_dict}, allow_val_change=True) # Allow changes from sweep
+            run.config.update({"network": network_dict}, allow_val_change=True) # Log network
     def signal_handler(sig, frame):
         print("[INFO] Ctrl+C detected. Finishing WandB run.")
         if init_wandb and run: # Use init_wandb flag

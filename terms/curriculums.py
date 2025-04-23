@@ -46,7 +46,7 @@ def progress_command_ranges(
     env_ids: Sequence[int],
     num_curriculum_levels: int = 10,
     success_rate_threshold: float = 0.9,
-    
+    min_steps_above_threshold: int = 100,
 ) -> None:
     """Set the command takeoff vector magnitude ranges for the robot. 
     The initial range is set to the initial magnitude range of the command term, and will be incremented linearly to the final range over the number of curriculum steps.
@@ -57,6 +57,11 @@ def progress_command_ranges(
         num_curriculum_levels: Number of curriculum levels to split the curriculum into from 0 to 1 percent completion from initial to final magnitude range
     """  
     
+    #Initialize attributes when first called
+    if not hasattr(env, "cmd_curriculum_progress_ratio"): env.cmd_curriculum_progress_ratio = 0
+    if not hasattr(env, "env_steps_since_last_curriculum_update"): env.env_steps_since_last_curriculum_update = 0
+    if not hasattr(env, "steps_above_success_threshold"): env.steps_above_success_threshold = 0
+    
     progress_ratio = env.cmd_curriculum_progress_ratio
     initial_magnitude_range = env.cfg.command_ranges.initial_magnitude_range
     final_magnitude_range = env.cfg.command_ranges.final_magnitude_range
@@ -64,10 +69,19 @@ def progress_command_ranges(
     current_magnitude_min = initial_magnitude_range[0] + progress_ratio * (final_magnitude_range[0] - initial_magnitude_range[0])
     current_magnitude_max = initial_magnitude_range[1] + progress_ratio * (final_magnitude_range[1] - initial_magnitude_range[1])
     
-    env._cmd_magnitude_range = (current_magnitude_min, current_magnitude_max)
-    env._cmd_pitch_range = (env.cfg.command_ranges.initial_pitch_range[0], env.cfg.command_ranges.final_pitch_range[0])
+    env.cmd_magnitude_range = (current_magnitude_min, current_magnitude_max)
+    env.cmd_pitch_range = (env.cfg.command_ranges.initial_pitch_range[0], env.cfg.command_ranges.final_pitch_range[0])
     
-    if env.running_success_rate > success_rate_threshold and env.env_steps_since_last_curriculum_update > env.max_episode_length/2 and env.cmd_curriculum_progress_ratio < 1:
+    if env.success_rate > success_rate_threshold:
+        env.steps_above_success_threshold += 1
+    else:
+        env.steps_above_success_threshold = 0
+    
+    if (env.steps_above_success_threshold >= min_steps_above_threshold and 
+        env.env_steps_since_last_curriculum_update > env.mean_episode_env_steps and 
+        env.cmd_curriculum_progress_ratio < 1):
+        
+        env.steps_above_success_threshold = 0
         env.cmd_curriculum_progress_ratio += 1/num_curriculum_levels
         env.env_steps_since_last_curriculum_update = 0
         print("Advancing takeoff magnitude curriculum: current_step_counter %s, progress ratio %s, mag=[%s, %s]", env.common_step_counter, env.cmd_curriculum_progress_ratio, current_magnitude_min, current_magnitude_max)

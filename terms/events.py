@@ -11,6 +11,7 @@ import math
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Tuple
 from envs import env
+from isaaclab.envs.mdp.events import reset_scene_to_default
 from terms.phase import Phase
 import torch
 
@@ -20,9 +21,41 @@ import isaaclab.utils.math as math_utils
 import logging
 from isaaclab.utils.math import sample_uniform, quat_from_euler_xyz
 from torch import Tensor
-
+from typing import Dict
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
+    
+def reset_robot_pre_landing_state(env: ManagerBasedRLEnv, 
+                                 env_ids: Sequence[int],
+                                 height_range: Tuple[float, float] = (0., 0.0),
+                                 root_lin_vel_range: Dict[str, Tuple[float, float]] = {"x": (-0.0, 0.0), "z": (-0.0, 0.0), "y": (0.0, 0.0)},
+                                 base_euler_angle_max_deg: float = 0.0,
+                                 base_ang_vel_max_deg: float = 0.0,
+                                 joint_pos_max_limit_ratio: float = 0.0,
+                                 joint_vel_max_deg: float = 0.0,
+                                 ) -> None:
+    
+    reset_scene_to_default(env, env_ids)
+    height = math_utils.sample_uniform(*height_range, (len(env_ids)), device=env.device) #Shape: (num_envs)
+    reset_robot_attitude_state(env, env_ids, 
+                               height=height, 
+                               base_euler_angle_max_deg=base_euler_angle_max_deg,
+                               base_ang_vel_max_deg=base_ang_vel_max_deg,
+                               joint_pos_max_limit_ratio=joint_pos_max_limit_ratio,
+                               joint_vel_max_deg=joint_vel_max_deg)
+    
+    x_vel_range, z_vel_range, y_vel_range = root_lin_vel_range["x"], root_lin_vel_range["z"], root_lin_vel_range["y"]
+    x_vel = math_utils.sample_uniform(*x_vel_range, (len(env_ids)), device=env.device) #Shape: (num_envs)
+    z_vel = math_utils.sample_uniform(*z_vel_range, (len(env_ids)), device=env.device) #Shape: (num_envs)
+    y_vel = math_utils.sample_uniform(*y_vel_range, (len(env_ids)), device=env.device) #Shape: (num_envs)
+    
+    root_state = env.robot.data.root_state_w[env_ids].clone()
+    root_state[:, 7] = x_vel
+    root_state[:, 9] = z_vel
+    root_state[:, 8] = y_vel
+    env.robot.write_root_state_to_sim(root_state, env_ids=env_ids)
+    
+
     
 def reset_robot_attitude_state(env: ManagerBasedRLEnv,
                                env_ids: Sequence[int],
@@ -160,7 +193,7 @@ def reset_robot_crouch_state(env: ManagerBasedRLEnv,
     env.robot.write_root_state_to_sim(root_state, env_ids=env_ids)
     env._phase_buffer[env_ids] = Phase.CROUCH
     #print("Reset Event: Reset to crouch state of envs %s", env_ids)
-
+    
     
 def reset_robot_flight_state(env: ManagerBasedRLEnv, 
                              env_ids: Sequence[int],

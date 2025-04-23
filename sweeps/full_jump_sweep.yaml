@@ -1,0 +1,44 @@
+# sweep.yaml
+program: train.py # Full path to interpreter + script
+method: grid
+metric:
+  name: Episode/full_jump_success_rate # Placeholder: Change to your actual optimization metric
+  goal: maximize
+parameters:
+  # Agent parameters (from rl_games_ppo_cfg.yaml)
+  # learning_rate:
+  #   values: [1e-3, 5e-4, 1e-4]
+  # gamma:
+  #   values: [0.99, 0.995]
+  # entropy_coef:
+  #   values: [0.0, 0.001, 0.0025]
+  # e_clip:
+  #   values: [0.1, 0.2]
+
+  # Environment parameters (from env_cfg.py - reward weights)
+  # Use dot notation to target nested Hydra config parameters
+  # env.rewards.attitude_rotation.params.kernel:
+  #   values: ["inverse_linear", "exponential"]
+  # env.rewards.attitude_rotation.params.scale:
+  #   values: [0.2, 0.5, 1, 2, 4, 8]
+  # env.rewards.attitude_rotation.weight:
+  #   values: [0.1, 1]
+  env.rewards.attitude_rotation.weight:
+    values: [0.4,0.6,0.8]
+
+  env.rewards.relative_cmd_error.params.scale:
+    values: [8.0,10.0,12.0]
+
+command:
+  - /workspace/isaaclab/_isaac_sim/kit/python/bin/python3 # Or use ${env}
+  - ${program}
+  # --- Required Argparse Flags (Hardcoded or from top-level vars if needed) ---
+  - "--task"
+  - "full-jump" # Hardcode the fixed task name
+  - "--project"
+  - "takeoff-flight"             # Hardcode the fixed project name
+  - "--headless"
+  - "--wandb"
+
+  # --- Hydra Overrides (Generated automatically from parameters above) ---
+  - ${args_no_hyphens}
