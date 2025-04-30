@@ -100,14 +100,21 @@ def joint_vel_l1(env: ManagerBasedRLEnv, phases: list[Phase]) -> torch.Tensor:
     reward_tensor[active_envs] = torch.sum(torch.abs(asset.data.joint_vel[active_envs, asset_cfg.joint_ids]), dim=1)
     return reward_tensor
 
-def action_rate_l2(env: ManagerBasedRLEnv, phases: list[Phase]) -> torch.Tensor:
+def action_rate(env: ManagerBasedRLEnv, phases: list[Phase], kernel: Kernel, scale: float = 1.0) -> torch.Tensor:
     """Penalize the rate of change of the actions using L2 squared kernel."""
     reward_tensor = torch.zeros(env.num_envs, device=env.device)
     active_envs = torch.zeros(env.num_envs, device=env.device)
     for phase in phases:
         active_envs = torch.logical_or(active_envs, env.jump_phase == phase)
         
-    reward_tensor[active_envs] = torch.sum(torch.square(env.action_manager.action[active_envs] - env.action_manager.prev_action[active_envs]), dim=1)
+    if kernel == Kernel.SQUARE:
+        reward_tensor[active_envs] = torch.sum(torch.square(env.action_manager.action[active_envs] - env.action_manager.prev_action[active_envs]), dim=1)
+    elif kernel == Kernel.LINEAR:
+        reward_tensor[active_envs] = torch.sum(torch.abs(env.action_manager.action[active_envs] - env.action_manager.prev_action[active_envs]), dim=1)
+    elif kernel == Kernel.EXPONENTIAL:
+        reward_tensor[active_envs] = torch.sum(torch.exp(-scale * (env.action_manager.action[active_envs] - env.action_manager.prev_action[active_envs])), dim=1)
+    elif kernel == Kernel.INVERSE_SQUARE:
+        reward_tensor[active_envs] = torch.sum(1/(1 + scale * (env.action_manager.action[active_envs] - env.action_manager.prev_action[active_envs])**2), dim=1)
     return reward_tensor
 
 

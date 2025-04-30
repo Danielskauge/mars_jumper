@@ -121,40 +121,42 @@ class EventCfg:
     
 @configclass
 class RewardsCfg:
-    """
-    Rewards are computed at each step of the environment (which can include multiple physics steps). 
-    There is no built in implementation of per-episode rewards.
-    """
-    #TAKEOFF PHASE
+
     relative_cmd_error = RewardTermCfg(func=rewards.relative_cmd_error,
                                        params={"scale": 7.0, 
                                                "kernel": rewards.Kernel.EXPONENTIAL},
-                                       weight=4.0,
+                                       weight=2.0,
     )
 
-
-    #FLIGHT PHASE
-    # attitude_error_at_transition_to_landing = RewardTermCfg(func=rewards.attitude_error_at_transition_to_landing, 
-    #                                                         params={"scale": 11.0},
-    #                                                         weight=1)
-    landing_base_height = RewardTermCfg(func=rewards.landing_base_height,
-                                   params={"target_height": 0.12, 
-                                           "kernel": rewards.Kernel.INVERSE_SQUARE,
-                                           "scale": 10.0},
-                                   weight=1)
+    # landing_base_height = RewardTermCfg(func=rewards.landing_base_height,
+    #                                params={"target_height": 0.12, 
+    #                                        "kernel": rewards.Kernel.SQUARE},
+    #                                weight=-0.01)
     
     attitude_error_on_way_down = RewardTermCfg(func=rewards.attitude_error_on_way_down, 
                                               params={"scale": 11.0},
-                                              weight=0.1)
-    attitude_rotation = RewardTermCfg(func=rewards.attitude_rotation_magnitude, 
-                                      params={"kernel": "inverse_quadratic", 
-                                              "scale": 11.0,
-                                              "phases": [Phase.LANDING]},
-                                      weight=0.1)
-
-    # is_alive_at_landing = RewardTermCfg(func=rewards.is_alive, 
-    #                                     params={"phases": [Phase.LANDING]},
-    #                                     weight=0.01)
+                                              weight=1)
+    
+    # attitude_rotation_flight = RewardTermCfg(func=rewards.attitude_rotation_magnitude, 
+    #                                   params={"kernel": "inverse_quadratic", 
+    #                                           "scale": 11.0,
+    #                                           "phases": [Phase.FLIGHT]},
+    #                                   weight=0.01)
+    
+    # attitude_rotation_landing = RewardTermCfg(func=rewards.attitude_rotation_magnitude, 
+    #                                   params={"kernel": "inverse_quadratic", 
+    #                                           "scale": 11.0,
+    #                                           "phases": [Phase.LANDING]},
+    #                                   weight=0.1)
+    
+    landing_action_rate = RewardTermCfg(func=rewards.action_rate,
+                                        params={"kernel": rewards.Kernel.SQUARE, 
+                                                "phases": [Phase.LANDING]},
+                                        weight=-0.001)
+    
+    is_alive_at_landing = RewardTermCfg(func=rewards.is_alive, 
+                                        params={"phases": [Phase.LANDING]},
+                                        weight=0.5)
     
     is_terminated = RewardTermCfg(func=mdp.is_terminated_term, weight= -1, params={"term_keys": ["bad_orientation"]})
     
@@ -181,7 +183,7 @@ class TerminationsCfg:
     #landed = TerminationTermCfg(func=terminations.landed, time_out=False)
     time_out = TerminationTermCfg(func=mdp.time_out, time_out=True)
     bad_orientation = TerminationTermCfg(func=terminations.bad_orientation, params={
-        "limit_angle": np.pi/3, 
+        "limit_angle": np.pi/2, 
         "phases": [Phase.TAKEOFF, Phase.LANDING]
     })
     # self_collision = TerminationTermCfg(func=custom_terminations.self_collision, params={"asset_cfg": SceneEntityCfg("robot", body_names=".*"), "threshold": 1.0}) #TODO: implement

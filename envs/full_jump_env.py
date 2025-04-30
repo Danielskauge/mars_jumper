@@ -28,11 +28,14 @@ class FullJumpEnv(ManagerBasedRLEnv):
         self.flight_success = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self.flight_success_rate = 0.0
         
+        #Landing Success
+        self.landing_success = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self.landing_success_rate = 0.0
+        
         #Full Jump Success
         self.full_jump_success = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self.full_jump_success_rate = 0.0
         self.success_rate = 0.0
-
         
         #Jump Phase
         if not hasattr(self, "jump_phase"):
@@ -148,6 +151,20 @@ class FullJumpEnv(ManagerBasedRLEnv):
                 "flight_success_rate": 0.0,
                 "flight_angle_error_at_landing": 0.0,
             }
+            
+    def _calculate_landing_success(self, env_ids: Sequence[int]) -> dict | None:
+        num_timed_out_envs = torch.sum(self.termination_manager.get_term("time_out")[env_ids]).item()
+        num_landing_envs = torch.sum(self.jump_phase[env_ids] == Phase.LANDING).item()
+        self.landing_success[env_ids] = self.termination_manager.get_term("time_out")[env_ids]
+        
+        if num_landing_envs > 0:
+            return {
+                "landing_success_rate": num_timed_out_envs / num_landing_envs,
+            }
+        else:
+            return {
+                "landing_success_rate": 0.0,
+            }
 
     def _abs_angle_error(self, quat: torch.Tensor) -> torch.Tensor:
         """
@@ -172,6 +189,16 @@ class FullJumpEnv(ManagerBasedRLEnv):
         obs_buf, reward_buf, terminated_buf, truncated_buf, extras = super().step(action)
         log_phase_info(self, extras)
         
+        # Log flight angle error for envs in flight phase
+        in_flight_phase = self.jump_phase == Phase.FLIGHT
+        if torch.any(in_flight_phase):
+            flight_quat = self.robot.data.root_quat_w[in_flight_phase]
+            flight_angle_error = self._abs_angle_error(flight_quat)
+            mean_flight_angle_error = torch.mean(flight_angle_error).item()
+            self.extras["log"]["flight_angle_error"] = mean_flight_angle_error
+        else:
+            self.extras["log"]["flight_angle_error"] = 0.0
+
         if self.cfg.curriculum is not None:
             self.env_steps_since_last_curriculum_update += 1
 
@@ -183,8 +210,8 @@ class FullJumpEnv(ManagerBasedRLEnv):
             
             takeoff_log_data = self._takeoff_success(env_ids)
             flight_log_data = self._calculate_flight_success(env_ids)
-            
-            self.full_jump_success[env_ids] = self.takeoff_success[env_ids] & self.flight_success[env_ids]
+            landing_log_data = self._calculate_landing_success(env_ids)
+            self.full_jump_success[env_ids] = self.takeoff_success[env_ids] & self.flight_success[env_ids] & self.landing_success[env_ids]
             self.full_jump_success_rate = torch.mean(self.full_jump_success[env_ids].float()).item()
             
             #Exponential smoothing of success rate
@@ -200,7 +227,8 @@ class FullJumpEnv(ManagerBasedRLEnv):
             # Log the stored data
             self.extras["log"].update(flight_log_data)
             self.extras["log"].update(takeoff_log_data)
-                
+            self.extras["log"].update(landing_log_data)
+            
             self.extras["log"].update({
                 "full_jump_success_rate": self.full_jump_success_rate, # Log the rate for this batch
                 "running_success_rate": self.success_rate, # Log the running success rate
@@ -215,3 +243,4 @@ class FullJumpEnv(ManagerBasedRLEnv):
             
             self.flight_success[env_ids] = False
             self.takeoff_success[env_ids] = False
+            self.landing_success[env_ids] = False

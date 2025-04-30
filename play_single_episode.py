@@ -81,8 +81,8 @@ from terms.phase import Phase # Import Phase enum
 from terms.observations import has_taken_off
 
 
-def plot_episode_data(robot, clipped_actions, scaled_actions, joint_angles, joint_torques, com_lin_vel, base_height, jump_phase, feet_off_ground, dt, log_dir, cmd_filename_suffix, cmd_wandb_suffix, actual_cmd_magnitude, episode_any_feet_on_ground, episode_takeoff_toggle, episode_contact_forces):
-    """Plots the recorded actions, joint angles, torques, target positions, COM velocity, base height, feet status, and contact forces.
+def plot_episode_data(robot, clipped_actions, scaled_actions, joint_angles, joint_torques, com_lin_vel, base_height, jump_phase, feet_off_ground, dt, log_dir, cmd_filename_suffix, cmd_wandb_suffix, actual_cmd_magnitude, episode_any_feet_on_ground, episode_takeoff_toggle, episode_contact_forces, episode_rewards):
+    """Plots the recorded actions, joint angles, torques, target positions, COM velocity, base height, feet status, contact forces, and rewards.
 
     Args:
         clipped_actions: A list of action tensors for the episode (clipped, [-1, 1]).
@@ -101,6 +101,7 @@ def plot_episode_data(robot, clipped_actions, scaled_actions, joint_angles, join
         episode_any_feet_on_ground: List of booleans indicating if any feet are on the ground.
         episode_takeoff_toggle: List of booleans indicating takeoff toggle status.
         episode_contact_forces: List of contact force tensors for the episode.
+        episode_rewards: List of reward tensors for the episode.
     """
     print("[INFO] Plotting episode data including actions, joints, COM, base, phase, status, and contact forces...")
     plots_dir = os.path.join(log_dir, "plots") # Define plots directory path
@@ -372,7 +373,8 @@ def plot_episode_data(robot, clipped_actions, scaled_actions, joint_angles, join
             f"com_velocity_plot_{cmd_wandb_suffix}": wandb.Image(com_vel_path), # Updated wandb log key and path
             f"base_feet_plot_{cmd_wandb_suffix}": wandb.Image(base_feet_path), # Add combined base/feet plot
             f"phase_status_plot_{cmd_wandb_suffix}": wandb.Image(phase_status_path), # Add phase status plot
-            f"contact_forces_plot_{cmd_wandb_suffix}": wandb.Image(episode_contact_forces[0]) if episode_contact_forces else wandb.Image(None) # Add contact forces plot
+            f"contact_forces_plot_{cmd_wandb_suffix}": wandb.Image(episode_contact_forces[0]) if episode_contact_forces else wandb.Image(None), # Add contact forces plot
+            f"rewards_plot_{cmd_wandb_suffix}": wandb.Image(episode_rewards[0]) if episode_rewards else wandb.Image(None) # Add rewards plot
         }
         wandb.log(wandb_log_data)
 
@@ -450,6 +452,53 @@ def plot_episode_data(robot, clipped_actions, scaled_actions, joint_angles, join
                  wandb.log({f"contact_forces_plot_{cmd_wandb_suffix}": wandb.Image(contact_forces_plot_path)})
             else:
                  print("[Warning] Contact force plot was not generated or saved, skipping WandB log.")
+
+    # Plot Rewards and Returns
+    rewards_plot_path = None
+    if episode_rewards: # Check if rewards were collected
+        print("[INFO] Plotting rewards and returns...")
+        rewards_np = torch.stack(episode_rewards).cpu().numpy()
+        num_steps = len(rewards_np)
+        future_returns = np.zeros(num_steps)
+        cumulative_reward = 0.0
+        # Calculate returns by iterating backwards
+        for i in range(num_steps - 1, -1, -1):
+            cumulative_reward += rewards_np[i]
+            future_returns[i] = cumulative_reward
+
+        fig_rewards, axs_rewards = plt.subplots(2, 1, figsize=(15, 10), sharex=True)
+
+        # Subplot 1: Instantaneous Rewards
+        ax = axs_rewards[0]
+        ax.plot(time, rewards_np, label="Instantaneous Reward")
+        ax.set_title("Instantaneous Reward vs Time")
+        ax.set_ylabel("Reward")
+        ax.legend()
+        ax.grid(True)
+        add_all_phase_shading(ax, time, jump_phase, add_legend_labels=False)
+
+        # Subplot 2: Summed Future Rewards (Returns)
+        ax = axs_rewards[1]
+        ax.plot(time, future_returns, label="Summed Future Rewards (Return)")
+        ax.set_title("Summed Future Rewards (Return) vs Time")
+        ax.set_xlabel("Time (s)")
+        ax.set_ylabel("Return")
+        ax.legend()
+        ax.grid(True)
+        add_all_phase_shading(ax, time, jump_phase, add_legend_labels=False)
+
+        plt.tight_layout()
+        rewards_plot_path = os.path.join(plots_dir, f"rewards_plot_{cmd_filename_suffix}.png")
+        plt.savefig(rewards_plot_path)
+        plt.close(fig_rewards) # Close the rewards figure
+
+        if args_cli.wandb:
+            if rewards_plot_path and os.path.exists(rewards_plot_path):
+                # The WandB logging for rewards is already handled earlier in the wandb_log_data dict
+                # No need to log again here unless the previous logic is removed
+                pass # Already logged via wandb_log_data
+            else:
+                print("[Warning] Rewards plot was not generated or saved, skipping WandB log update (already attempted).")
 
 def main():
     """Play with RL-Games agent for a single episode."""
@@ -566,6 +615,7 @@ def main():
     episode_takeoff_toggle = []
     episode_any_feet_on_ground = []
     episode_contact_forces = [] # Initialize list for contact forces
+    episode_rewards = [] # Initialize list for rewards
     dt = env.unwrapped.physics_dt
 
     # reset environment
@@ -621,28 +671,19 @@ def main():
                 any_feet = any_feet_on_the_ground(env.unwrapped).squeeze(0) # Squeeze batch dim
                 episode_any_feet_on_ground.append(any_feet.clone()) # Store any feet status
                 
-                # Get and store net contact forces using the scene's contact sensor
-                try:
-                    # Define the contact sensor config name (assuming it's 'contact_forces')
-                    contact_sensor_cfg_name = SceneEntityCfg("contact_forces").name 
-                    contact_sensor: ContactSensor = env.unwrapped.scene[contact_sensor_cfg_name]
-                    # Get net forces (shape: [num_envs, num_bodies, 3])
-                    current_contact_forces = contact_sensor.data.net_forces_w.clone().squeeze(0) # Squeeze batch dim
-                    episode_contact_forces.append(current_contact_forces)
-                except KeyError:
-                    # Handle case where contact sensor is not found in the scene
-                    if not episode_contact_forces: # Log only once
-                        print(f"[Warning] Contact sensor '{contact_sensor_cfg_name}' not found in env.scene. Skipping contact force plotting.")
-                    # Append None or handle appropriately in plotting
-                    pass 
-                except AttributeError:
-                     # Handle case where contact sensor data or net_forces_w attribute doesn't exist
-                    if not episode_contact_forces: # Log only once
-                        print(f"[Warning] Attribute 'data.net_forces_w' not found for contact sensor '{contact_sensor_cfg_name}'. Skipping contact force plotting.")
-                    # Append None or handle appropriately in plotting
-                    pass
+                # Define the contact sensor config name (assuming it's 'contact_forces')
+                contact_sensor_cfg_name = SceneEntityCfg("contact_forces").name 
+                contact_sensor: ContactSensor = env.unwrapped.scene[contact_sensor_cfg_name]
+                # Get net forces (shape: [num_envs, num_bodies, 3])
+                current_contact_forces = contact_sensor.data.net_forces_w.clone().squeeze(0) # Squeeze batch dim
+                episode_contact_forces.append(current_contact_forces)
+                
+                print("shape of contact forces: ", current_contact_forces.shape)
 
-                obs, _, dones, _ = env.step(actions)
+                obs, rewards, dones, _ = env.step(actions)
+                episode_rewards.append(rewards.clone().squeeze(0)) # Store rewards
+
+                print("rewards: ", rewards)
 
                 # perform operations for terminated episodes
                 if len(dones) > 0 and dones[0]: # Check the first (and only) env
@@ -691,7 +732,8 @@ def main():
                                           actual_cmd_magnitude=actual_cmd_magnitude,
                                           episode_any_feet_on_ground=episode_any_feet_on_ground,
                                           episode_takeoff_toggle=episode_takeoff_toggle,
-                                          episode_contact_forces=episode_contact_forces) # Pass contact forces
+                                          episode_contact_forces=episode_contact_forces,
+                                          episode_rewards=episode_rewards) # Pass contact forces and rewards
 
         if args_cli.wandb:
             wandb.finish()

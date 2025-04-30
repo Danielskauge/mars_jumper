@@ -1,175 +1,73 @@
-# Mars Jumper Project
+# Mars Jumper: Lightweight Quadruped with PEAs for Dynamic Jumping
 
-This document provides instructions for setting up and running the Mars Jumper simulation environment.
 
-## Running the Container
+[![Simulation Demo](assets/simulation_demo.gif)]()
 
-### Build Base Image (If not already done)
-1. Navigate to the `isaaclab/docker` directory within your Isaac Lab installation.
-2. Execute:
-   ```bash
-   python container.py start base
-   ```
+## Overview
 
-### Build and Run Mars Jumper Container
-1. Navigate to the `mars_jumper/docker` directory within this project.
-2. Build the image:
-   ```bash
-   docker compose --env-file .env.base --file docker-compose.yaml build mars-jumper
-   ```
-3. Start the container in detached mode:
-   ```bash
-   docker compose --env-file .env.base --file docker-compose.yaml up -d mars-jumper-daniel
-   ```
-   *Note: This command uses the service name `mars-jumper-daniel`. Adjust if your service name differs. Running this will overwrite any existing container with the same service name and mount the local `mars_jumper` directory into the container.*
+Mars Jumper is a research project focused on developing a lightweight, low-cost quadruped robot designed for dynamic jumping maneuvers, particularly relevant for exploring challenging terrains like Martian or Lunar lava tubes. This repository contains the simulation environments, reinforcement learning training code, and utilities for deploying control policies. The robot design uniquely incorporates **Parallel Elastic Actuators (PEAs)** in its knees to enhance jumping performance and potentially aid in landing compliance. Notably, this work presents the first deep learning based modeling of PEAs, using neural networks trained on real-world test data to accurately capture their complex dynamics.
 
-### Interact with the Container
-- Access the container's shell:
-  ```bash
-  docker exec -it mars-jumper-daniel bash
-  ```
-  *(Replace `mars-jumper-daniel` if using a different service name)*
-- Run TensorBoard (from within the container shell):
-  ```bash
-  tensorboard --logdir logs/rl_games/mars_jumper --bind_all
-  ```
-  *(Access TensorBoard via `http://<your-ip>:6006` in your browser)*
+## Motivation
 
-### Stop and Clean Up
-- Stop the running container:
-  ```bash
-  docker compose --env-file .env.base --file docker-compose.yaml down
-  ```
-  *Alternatively, stop a specific container:*
-  ```bash
-  docker stop mars-jumper-daniel
-  ```
-- Remove the stopped container:
-  ```bash
-  docker rm mars-jumper-daniel
-  ```
-- Remove the Docker image:
-  ```bash
-  docker rmi mars-jumper
-  ```
+Exploring extraterrestrial environments like Mars and the Moon presents unique challenges. While wheeled rovers have been successful, accessing scientifically valuable locations like lava tubes requires navigating complex terrain unsuitable for wheels. Jumping robots offer a promising alternative, leveraging lower gravity to overcome obstacles. However, developing robust jumping capabilities, especially controlling flight and landing, remains difficult and risky to test on expensive hardware.
 
-## Training
+This project addresses these challenges by:
+1.  **Designing a novel, low-cost quadruped:** Making dynamic jump testing more accessible.
+2.  **Integrating Parallel Elastic Actuators (PEAs):** Combining servo motors with springs in the knees to potentially boost jump power and absorb landing impacts.
+3.  **Using Reinforcement Learning (RL):** Training intelligent controllers (using PPO) in simulation to master complex jumping maneuvers, including takeoff, in-flight attitude control using leg movements, and landing.
+4.  **Focusing on Sim2Real Transfer:** Employing techniques like Domain Randomization to ensure policies trained in simulation can effectively control the physical robot.
 
-All training commands should be run from within the container's shell (`/workspace/mars_jumper`).
+## Key Features
 
-### Basic Training
-```bash
-python train.py --task full-jump --headless
+*   **Lightweight Quadruped Design:** Optimized for agility and dynamic movements. (CAD/design files likely in `robot/`)
+*   **Parallel Elastic Actuators (PEAs):** Servo-spring mechanism in the knees for enhanced jump performance. The PEAs are modeled using a Multi-Layer Perceptron (MLP) trained on real-world test data.
+*   **Reinforcement Learning Control:** Utilizes Proximal Policy Optimization (PPO) for training robust jumping policies.
+*   **Dynamic Jumping:** Focus on single jumps: takeoff, flight-phase attitude control (using legs as reaction masses), and landing.
+*   **Simulation Environment:** Developed using [Mention Simulation Platform, e.g., Isaac Sim/Gym] (likely defined in `envs/`).
+*   **Sim2Real Ready:** Incorporates Domain Randomization during training for better transfer to hardware.
+
+## Project Status
+
+[Describe current status - e.g., Simulation complete, Hardware prototype built, Initial hardware tests conducted, etc.]
+
+## Repository Structure
+
+```
+mars_jumper/
+├── envs/             # Simulation environment definitions
+├── robot/            # Robot description files (URDF/MJCF/USD) and CAD models
+├── scripts/          # Utility scripts
+├── sweeps/           # Hyperparameter sweep configurations (e.g., for WandB)
+├── USD_files/        # USD assets for simulation visualization
+├── train.py          # Main script for training RL policies
+├── play.py           # Script to run and visualize a trained policy
+├── play_single_episode.py # Script to run a single episode evaluation
+├── play_multiple_episodes.py # Script to run multiple episode evaluations
+├── pyproject.toml    # Project dependencies and configuration
+├── README.md         # This file
+└── ...
 ```
 
-### Training with Weights & Biases Logging
+## Getting Started
+
+### Training
+
+To train a new jumping policy:
 ```bash
-python train.py --task full-jump --headless --wandb --project takeoff_cmd --run <your_run_name>
+python train.py [arguments...]
 ```
+*   Check `train.py` or use `python train.py --help` for available training arguments (e.g., configuration files, hyperparameters, logging options).
+*   Training progress and results are typically logged using Weights & Biases (see `wandb/` directory).
 
-### Hyperparameter Sweeping
+### Evaluation / Visualization
 
-Create a sweep:
+To visualize a trained policy checkpoint:
 ```bash
-python -m wandb sweep sweep.yaml --project <project_name>
+python play.py --checkpoint <path_to_checkpoint> [other_arguments...]
 ```
-Run a sweep agent:
-```bash
-python -m wandb agent danielskauge/mars_jumper-mars_jumper/<sweep_id>
-```
+*   Use `play_single_episode.py` or `play_multiple_episodes.py` for specific evaluation protocols. Check scripts for relevant arguments.
 
-### Training with Video Recording
-```bash
-python train.py --task mars-jumper-manager-based --headless --enable_cameras --video --video_length 500 --video_interval 10000
-```
-- `--enable_cameras`: Required for video recording in headless mode.
-- `--video`: Enable video recording.
-- `--video_length`: Duration of each recorded video (in simulation steps). Default: 500.
-- `--video_interval`: Frequency of video recording (in simulation steps). Default: 10000.
-- *Note: Enabling recording significantly slows down training.*
-- Recorded videos are saved in: `logs/rl_games/mars_jumper/<run_name>/videos/train`
+*(Please update with actual citation details)*
 
-### Distributed Training
-Ensure sufficient shared memory is allocated to the container (see `shm_size` in `docker-compose.yaml`, default is 1GB).
-
-```bash
-python -m torch.distributed.run --nnodes=1 --nproc_per_node=2 train.py --task mars-jumper-manager-based --distributed --headless
-```
-- `--distributed`: Enable distributed training.
-- `--nproc_per_node`: Number of processes (usually matches the number of GPUs available/intended).
-
-### Distributed Training with W&B and Video
-```bash
-python -m torch.distributed.run --nnodes=1 --nproc_per_node=2 train.py --task mars-jumper-manager-based --distributed --headless --enable_cameras --video --video_length 500 --video_interval 10000 --wandb --project_name takeoff --run_name <your_run_name>
-```
-
-### Selecting a Specific GPU
-From within the container shell:
-```bash
-export CUDA_VISIBLE_DEVICES=<gpu_id> # e.g., export CUDA_VISIBLE_DEVICES=0
-```
-Check available GPUs: `nvidia-smi`
-
-## Playing (Evaluating Trained Models)
-
-All play commands should be run from within the container's shell (`/workspace/mars_jumper`).
-
-### Play with Latest Checkpoint
-This uses the checkpoint from the most recent training run found in `logs/rl_games/mars_jumper/`.
-```bash
-python play.py --task mars-jumper-manager-based --use_last_checkpoint --num_envs 1
-```
-
-### Play with Specific Checkpoint
-```bash
-python play.py --task mars-jumper-manager-based --checkpoint <path/to/your/checkpoint.pth> --num_envs 1
-```
-- Example path: `logs/rl_games/mars_jumper/<run_name>/nn/<checkpoint_name>.pth`
-
-### Play with Video Recording (Headless)
-```bash
-python play.py --task mars-jumper-manager-based --use_last_checkpoint --headless --enable_cameras --video --video_length 200 --num_envs 1
-```
-- `--video`: Record a video of the playthrough.
-- `--video_length`: Duration of the video (in simulation steps).
-- The script will exit after recording one video of the specified length.
-- Recorded videos are saved in: `logs/rl_games/mars_jumper/<run_name>/videos/play` (or a similar directory if a specific checkpoint is used).
-
-## Utility Scripts
-
-### Convert URDF to USD
-The script `scripts/convert_urdf.py` converts URDF files to the USD format required by Isaac Sim. Run it from within the container.
-```bash
-python scripts/convert_urdf.py --headless <input_urdf_path> <output_usd_path>
-```
-Example:
-```bash
-python scripts/convert_urdf.py --headless /workspace/mars_jumper/submodules/cad/simplified_robot/robot_urdf_try1/urdf/robot_urdf_try1.urdf /workspace/mars_jumper/USD_files/example_usd/example_USD.usd
-```
-**Important:**
-1.  `--headless` or `--livestream` is required when running remotely or without a graphical display.
-2.  The conversion generates the `.usd` file along with auxiliary files/folders (`configuration/`, `.asset_info`, `config.yaml`). These **must** remain in the same directory as the `.usd` file for it to load correctly in simulations.
-
-## Process Management (Inside Container)
-
-- List running Python processes related to training:
-  ```bash
-  ps aux | grep train.py
-  ```
-- Kill a specific process by its ID (PID):
-  ```bash
-  kill <pid>
-  ```
-- Kill all processes containing "train":
-  ```bash
-  pkill -f train
-  ```
-- View system resource usage:
-  ```bash
-  htop
-  ```
-- If a process won't terminate, find its parent process and kill that:
-  ```bash
-  ps -ef --forest # Find the parent PID
-  kill <parent_pid>
-  ```
+## License
+MIT
