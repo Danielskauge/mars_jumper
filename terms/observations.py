@@ -40,10 +40,10 @@ def has_taken_off(
         A tensor of shape (num_envs, 1) with 1.0 for environments where the robot has taken off
         and 0.0 for environments where it hasn't.
     """
-    if not hasattr(env, "_phase_buffer"):
-        return torch.zeros(env.num_envs, 1, device=env.device)
-    
-    return (env._phase_buffer == (Phase.FLIGHT | Phase.LANDING)).float().unsqueeze(-1)
+    if not hasattr(env, "jump_phase"):
+        env.jump_phase = torch.full((env.num_envs,), Phase.TAKEOFF, dtype=torch.int32, device=env.device)
+
+    return ((env.jump_phase == Phase.LANDING) | (env.jump_phase == Phase.FLIGHT)).float().unsqueeze(-1)
 
 def base_rotation_vector(
     env: ManagerBasedRLEnv,

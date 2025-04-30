@@ -54,29 +54,10 @@ class MarsJumperRobotCfg(ArticulationCfg):
         },
         )
         
-        #stable parameters for explicit PD control   
-        # stall_torque = 1 #Nm
-        # velocity_limit = 13 #rad/s 
-        # stiffness = 0.5 #Nm/rad
-        # damping = 0.02 #Nm/rad/s
-        
-        # #Implicit control (verified to work in test env)
-        # stall_torque = 2 #Nm
-        # velocity_limit = 30 #rad/s 
-        # stiffness = 15 #Nm/rad
-        # damping = 0.1 #Nm/rad/s
-        
-        #Weaker implicit control, latest (verified to work in test env, jump a bit over 2m)
+       
         stall_torque = 2 #Nm
-        #velocity_limit = 500 #rad/s 
         stiffness = 20 #Nm/rad (not sure if that's correct)
         damping = 0.2 #Nm/rad/s #original 0.05
-        
-        # #New experimental control for attitude stabilization
-        # stall_torque = 1 #Nm
-        # velocity_limit = 15 #rad/s 
-        # stiffness = 1  #Nm/rad
-        # damping = 0.1 #Nm/rad/s
 
         actuators = {
             "motors": ImplicitActuatorCfg(

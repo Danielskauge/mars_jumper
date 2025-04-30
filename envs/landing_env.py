@@ -1,4 +1,4 @@
-from envs.env_cfg import MarsJumperEnvCfg
+from envs.takeoff_env_cfg import MarsJumperEnvCfg
 from isaaclab.assets.articulation.articulation import Articulation
 from isaaclab.envs import ManagerBasedRLEnv, VecEnvStepReturn
 from collections.abc import Sequence

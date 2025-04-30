@@ -6,8 +6,8 @@ from envs.attitude_env_cfg import AttitudeEnvCfg
 from envs.full_jump_env_cfg import FullJumpEnvCfg
 from envs.landing_env_cfg import LandingEnvCfg
 from . import agents
-from .env_cfg import MarsJumperEnvCfg
-from .env import MarsJumperEnv
+from .takeoff_env_cfg import MarsJumperEnvCfg
+from .takeoff_env import MarsJumperEnv
 from .attitude_env import AttitudeEnv
 
 
@@ -24,7 +24,7 @@ gym.register(
 
 gym.register(
     id="takeoff",
-    entry_point="envs.env:MarsJumperEnv",
+    entry_point="envs.takeoff_env:MarsJumperEnv",
     disable_env_checker=True,
     kwargs={
         "env_cfg_entry_point": MarsJumperEnvCfg,

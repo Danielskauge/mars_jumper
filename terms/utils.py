@@ -12,6 +12,7 @@ import numpy as np
 
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.assets import Articulation
+from isaaclab.sensors import ContactSensor
 
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedEnv, ManagerBasedRLEnv
@@ -100,9 +101,30 @@ def update_jump_phase(
     env.prev_jump_phase = env.jump_phase.clone()
     
     env.jump_phase[crouch_envs & (base_height > env.cfg.crouch_to_takeoff_height_trigger)] = Phase.TAKEOFF
-    env.jump_phase[takeoff_envs & (base_height > env.cfg.takeoff_to_flight_height_trigger)] = Phase.FLIGHT
-    neg_vertical_vel_envs = base_com_vertical_vel < 0.0
-    env.jump_phase[flight_envs & (base_height < env.cfg.flight_to_landing_height_trigger) & neg_vertical_vel_envs] = Phase.LANDING
+    
+    all_feet_off_ground = all_feet_off_the_ground(env)
+    # Apply takeoff to flight transition
+    env.jump_phase[takeoff_envs & all_feet_off_ground & (base_height > env.cfg.takeoff_to_flight_height_trigger)] = Phase.FLIGHT
+    
+    #neg_vertical_vel_envs = base_com_vertical_vel < 0.1
+    any_feet_on_ground = any_feet_on_the_ground(env)
+    env.jump_phase[flight_envs & any_feet_on_ground] = Phase.LANDING
+
+def all_feet_off_the_ground(env: ManagerBasedEnv) -> torch.Tensor:
+    """Check if the feet are off the ground"""
+    contact_sensor: ContactSensor = env.scene[SceneEntityCfg("contact_forces").name]
+    feet_idx, _ = env.robot.find_bodies(".*FOOT.*")
+    feet_forces = contact_sensor.data.net_forces_w[:, feet_idx] # Tensor shape: [num_envs, num_feet, 3]
+    feet_force_mag = torch.norm(feet_forces, dim=-1) # Tensor shape: [num_envs, num_feet]
+    return torch.all(feet_force_mag <= contact_sensor.cfg.force_threshold, dim=-1) # Tensor shape: [num_envs]
+
+def any_feet_on_the_ground(env: ManagerBasedEnv) -> torch.Tensor:
+    """Check if any feet are on the ground"""
+    contact_sensor: ContactSensor = env.scene[SceneEntityCfg("contact_forces").name]
+    feet_idx, _ = env.robot.find_bodies(".*FOOT.*")
+    feet_forces = contact_sensor.data.net_forces_w[:, feet_idx] # Tensor shape: [num_envs, num_feet, 3]
+    feet_force_mag = torch.norm(feet_forces, dim=-1) # Tensor shape: [num_envs, num_feet]
+    return torch.any(feet_force_mag > contact_sensor.cfg.force_threshold, dim=-1) # Tensor shape: [num_envs]
 
 def log_phase_info(env: ManagerBasedEnv, extras: dict):
     """Logs the distribution of phases and average height per phase to the extras dict.

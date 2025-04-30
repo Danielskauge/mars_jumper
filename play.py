@@ -18,11 +18,16 @@ from isaaclab.app import AppLauncher
 
 # add argparse arguments
 parser = argparse.ArgumentParser(description="Play a checkpoint of an RL agent from RL-Games.")
-parser.add_argument("--video", action="store_true", default=True, help="Record videos during training.")
+parser.add_argument("--cmd_magnitude", type=float, default=None, help="Command magnitude.")
+parser.add_argument("--cmd_pitch", type=float, default=None, help="Command pitch.")
+
+parser.add_argument("--video", action="store_true", default=False, help="Record videos during training.")
+parser.add_argument("--wandb", action="store_true", default=False, help="Log videos to WandB.")
 parser.add_argument("--video_length", type=int, default=500, help="Length of the recorded video (in steps).")
 parser.add_argument(
     "--disable_fabric", action="store_true", default=False, help="Disable fabric and use USD I/O operations."
 )
+
 parser.add_argument("--num_envs", type=int, default=1, help="Number of environments to simulate.")
 parser.add_argument("--task", type=str, default="None", help="Name of the task.")
 parser.add_argument("--checkpoint", type=str, default=None, help="Path to model checkpoint.")
@@ -45,11 +50,8 @@ args_cli = parser.parse_args()
 if args_cli.video:
     args_cli.enable_cameras = True
 
-# launch omniverse app
 app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
-
-"""Rest everything follows."""
 
 
 import gymnasium as gym
@@ -80,9 +82,11 @@ def main():
         args_cli.task, device=args_cli.device, num_envs=args_cli.num_envs, use_fabric=not args_cli.disable_fabric
     )
     
-    # Set the command ranges to the final ranges
-    env_cfg.command_ranges.initial_magnitude_range = (env_cfg.command_ranges.final_magnitude_range[0], env_cfg.command_ranges.final_magnitude_range[1])
-    env_cfg.command_ranges.initial_pitch_range = (env_cfg.command_ranges.final_pitch_range[0], env_cfg.command_ranges.final_pitch_range[1])
+    #Override the command ranges to be sampled from
+    if args_cli.cmd_magnitude is not None:
+        env_cfg.command_ranges.initial_magnitude_range = (args_cli.cmd_magnitude, args_cli.cmd_magnitude)
+    if args_cli.cmd_pitch is not None:
+        env_cfg.command_ranges.initial_pitch_range = (args_cli.cmd_pitch, args_cli.cmd_pitch)
     
     agent_cfg = load_cfg_from_registry(args_cli.task, "rl_games_cfg_entry_point")
 
@@ -166,6 +170,11 @@ def main():
     agent: BasePlayer = runner.create_player()
     agent.restore(resume_path)
     agent.reset()
+    
+    
+    episode_actions = torch.zeros((env.unwrapped.num_envs, max_episode_steps, 12))
+    episode_joint_angles = torch.zeros((env.unwrapped.num_envs, max_episode_steps, 12))
+    episode_step_idx = 0
 
     dt = env.unwrapped.physics_dt
 
@@ -194,11 +203,18 @@ def main():
                 obs = agent.obs_to_torch(obs)
                 # agent stepping
                 actions = agent.get_action(obs, is_deterministic=True)
+                
+                episode_actions[episode_step_idx, :] = torch.squeeze(actions, 0)
+                episode_joint_angles[episode_step_idx, :] = torch.squeeze(env.unwrapped.robot.joint_positions, 0)
+                episode_step_idx += 1
+      
+
                 # env stepping
                 obs, _, dones, _ = env.step(actions)
 
                 # perform operations for terminated episodes
                 if len(dones) > 0:
+                    episode_step_idx = 0
                     # reset rnn state for terminated episodes
                     if agent.is_rnn and agent.states is not None:
                         for s in agent.states:
@@ -218,6 +234,7 @@ def main():
         env.close()
         if args_cli.video:
             save_video_to_wandb(video_folder, log_dir)
+            plot_actions_and_joint_angles(episode_actions, episode_joint_angles)
 
 def save_video_to_wandb(video_folder, log_dir):
     with open(os.path.join(log_dir, "params/agent.yaml"), "r") as f:

@@ -30,7 +30,7 @@ import torch
 
 from isaaclab.envs import ManagerBasedRLEnv
 
-from envs.env_cfg import MarsJumperEnvCfg
+from envs.takeoff_env_cfg import MarsJumperEnvCfg
 
 def main():
     """Main function."""

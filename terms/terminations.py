@@ -11,6 +11,7 @@ the termination introduced by the function.
 
 from __future__ import annotations
 
+import numpy as np
 import torch
 from typing import TYPE_CHECKING
 
@@ -20,9 +21,29 @@ from isaaclab.managers import SceneEntityCfg
 from isaaclab.sensors import ContactSensor
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
-    from envs.env import MarsJumperEnv
+    from envs.takeoff_env import MarsJumperEnv
     from envs.attitude_env import AttitudeEnv
 from terms.phase import Phase
+
+def bad_orientation(
+    env: ManagerBasedRLEnv,
+    limit_angle: float = np.pi/2,
+    phases: list[Phase] = [Phase.TAKEOFF, Phase.FLIGHT, Phase.LANDING]
+) -> torch.Tensor:
+    
+    """Terminate when the robot's orientation is too far from the desired orientation limits."""
+    # Calculate the orientation condition (a boolean tensor)
+    orientation_bad = torch.acos(-env.robot.data.projected_gravity_b[:, 2]).abs() > limit_angle
+    
+    # Check if the current phase for each environment is in the allowed phases
+    # Initialize a tensor of False with the same shape as env.jump_phase
+    phase_match = torch.zeros_like(env.jump_phase, dtype=torch.bool)
+    # Iterate through allowed phases and set corresponding entries to True
+    for phase in phases:
+        phase_match = torch.logical_or(phase_match, env.jump_phase == phase)
+        
+    # Terminate only if both orientation is bad AND phase is allowed for that env
+    return torch.logical_and(orientation_bad, phase_match)
 
 def self_collision(
     env: ManagerBasedRLEnv,

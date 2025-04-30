@@ -222,7 +222,9 @@ def main():
     # Initialize simulation
     sim = sim_utils.SimulationContext(sim_utils.SimulationCfg(dt=1/200))
     sim.set_camera_view(eye=[0, 0.5, 0.2], target=[0.0, 0.0, 0.0])
-    sim.gravity = (0.0, 0.0, -3.721)
+    mars_g = 3.721
+    earth_g = 9.81
+    sim.gravity = (0.0, 0.0, -earth_g)
     sim.reset()
     # Scene setup is now inside run_simulator
     # scene_entities, scene_origins =  design_scene() # Removed

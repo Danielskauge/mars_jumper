@@ -10,14 +10,12 @@ from __future__ import annotations
 import math
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Tuple
-from envs import env
 from isaaclab.envs.mdp.events import reset_scene_to_default
 from terms.phase import Phase
 import torch
 
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.assets import Articulation
-import isaaclab.utils.math as math_utils
 import logging
 from isaaclab.utils.math import sample_uniform, quat_from_euler_xyz
 from torch import Tensor

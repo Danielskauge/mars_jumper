@@ -35,7 +35,8 @@ class FullJumpEnv(ManagerBasedRLEnv):
 
         
         #Jump Phase
-        self.jump_phase = torch.full((self.num_envs,), Phase.TAKEOFF, dtype=torch.int32, device=self.device)
+        if not hasattr(self, "jump_phase"):
+            self.jump_phase = torch.full((self.num_envs,), Phase.TAKEOFF, dtype=torch.int32, device=self.device)
         self.prev_jump_phase = torch.full_like(self.jump_phase, Phase.TAKEOFF)
         
         #Command Curriculum
@@ -45,7 +46,9 @@ class FullJumpEnv(ManagerBasedRLEnv):
 
     def _takeoff_success(self, env_ids: Sequence[int]) -> dict | None:
         """
-        Calculates the success rate of the takeoff phase for the environments being reset.
+        Success rate is calculated by successfull takeoffs divided by the number of reset environments.
+        
+        Other metrics are only calcualted for those that have taken off.
 
         Success is defined based on the similarity between the commanded takeoff velocity
         vector and the actual velocity vector at liftoff (transition from TAKEOFF to FLIGHT).
@@ -64,9 +67,10 @@ class FullJumpEnv(ManagerBasedRLEnv):
         num_has_taken_off = torch.sum(has_taken_off).item()    # Denominator for success rate
 
         if num_has_taken_off > 0:
-            cmd_vec = convert_command_to_euclidean_vector(self.command[env_ids])
-            liftoff_vec = self.liftoff_com_lin_vel[env_ids]
-        
+            has_taken_off_ids = env_ids[has_taken_off]
+            cmd_vec = convert_command_to_euclidean_vector(self.command[has_taken_off_ids])
+            liftoff_vec = self.liftoff_com_lin_vel[has_taken_off_ids]
+            
             cos_angle = torch.sum(cmd_vec * liftoff_vec, dim=-1) / (torch.norm(cmd_vec, dim=-1) * torch.norm(liftoff_vec, dim=-1))
             angle_error = torch.acos(torch.clamp(cos_angle, min=-1.0, max=1.0))
             relative_error = torch.norm(liftoff_vec - cmd_vec, dim=-1) / torch.norm(cmd_vec, dim=-1)
@@ -75,14 +79,19 @@ class FullJumpEnv(ManagerBasedRLEnv):
             magnitude_ok = torch.abs(magnitude_ratio_error) < self.cfg.takeoff_magnitude_ratio_error_threshold
             angle_ok = angle_error < self.cfg.takeoff_angle_error_threshold
             
-            self.takeoff_success[env_ids] = magnitude_ok & angle_ok & has_taken_off
+            self.takeoff_success[has_taken_off_ids] = magnitude_ok & angle_ok
             
-            num_successful_takeoffs = torch.sum(self.takeoff_success[env_ids]).item()
+            num_successful_takeoffs = torch.sum(self.takeoff_success[has_taken_off_ids]).item()
             num_reset_envs = len(env_ids)
             self.takeoff_success_rate = num_successful_takeoffs / num_reset_envs
             
+            # Calculate mean angle error excluding NaNs
+            valid_angle_errors = angle_error[~torch.isnan(angle_error)]
+            mean_angle_error = torch.mean(valid_angle_errors) if valid_angle_errors.numel() > 0 else 0.0
+            
             return {
-                "takeoff_angle_error": angle_error.mean().item(),
+                "taken_off_ratio": num_has_taken_off / num_reset_envs,
+                "takeoff_angle_error": mean_angle_error,
                 "takeoff_magnitude_ratio_error": magnitude_ratio_error.mean().item(),
                 "takeoff_success_rate": self.takeoff_success_rate,
                 "takeoff_relative_error": relative_error.mean().item(),
@@ -118,24 +127,26 @@ class FullJumpEnv(ManagerBasedRLEnv):
         num_taken_off = torch.sum((self.jump_phase[env_ids] == Phase.FLIGHT) | (self.jump_phase[env_ids] == Phase.LANDING)).item()
 
         if num_taken_off > 0:
-            angle_error = self._abs_angle_error(self.body_angle_quat_at_landing[env_ids]) # Shape: (len(env_ids),)
-
-            angle_ok = angle_error < self.cfg.flight_angle_error_threshold # Shape: (len(env_ids),), bool
+            in_landing_phase = self.jump_phase[env_ids] == Phase.LANDING
+            landed_env_ids = env_ids[in_landing_phase]
+            
+            angle_error_at_landing = self._abs_angle_error(self.body_angle_quat_at_landing[landed_env_ids]) # Shape: (len(landed_env_ids),)
+            angle_ok = angle_error_at_landing < self.cfg.flight_angle_error_threshold # Shape: (len(landed_env_ids),), bool
             
             num_successful_landings = torch.sum(angle_ok).item() # Numerator
 
-            ids_successful_landings = env_ids[angle_ok]
+            ids_successful_landings = landed_env_ids[angle_ok]
             self.flight_success[ids_successful_landings] = True
             self.flight_success_rate = num_successful_landings / num_taken_off
             
             return {
                 "flight_success_rate": self.flight_success_rate,
-                "flight_angle_error": torch.mean(angle_error).item(), # Avg error for those in flight
+                "flight_angle_error_at_landing": torch.mean(angle_error_at_landing).item(), # Avg error for those in flight
             }
         else:
             return {
                 "flight_success_rate": 0.0,
-                "flight_angle_error": 0.0,
+                "flight_angle_error_at_landing": 0.0,
             }
 
     def _abs_angle_error(self, quat: torch.Tensor) -> torch.Tensor:
@@ -160,8 +171,9 @@ class FullJumpEnv(ManagerBasedRLEnv):
         
         obs_buf, reward_buf, terminated_buf, truncated_buf, extras = super().step(action)
         log_phase_info(self, extras)
-                
-        self.env_steps_since_last_curriculum_update += 1
+        
+        if self.cfg.curriculum is not None:
+            self.env_steps_since_last_curriculum_update += 1
 
         return obs_buf, reward_buf, terminated_buf, truncated_buf, extras
     

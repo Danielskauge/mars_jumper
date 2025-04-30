@@ -90,10 +90,11 @@ class ActionsCfg:
 class CommandRangesCfg:
     """Configuration for command ranges."""
     
-    initial_max_target_height: float = 1.8 #m 0.4 baseline
+    # beware that theese are in addition to the height at which the robot switches to flight phase
+    initial_max_target_height: float = 0.6 #m 0.4 baseline
     initial_min_target_height: float = 0.6 #m
     
-    final_max_target_height: float = 1.8 #m
+    final_max_target_height: float = 1.8 #m 
     final_min_target_height: float = 0.6 #m
     
     initial_pitch_range: Tuple[float, float] = (0.0, 0.0) # Initial pitch range
@@ -177,7 +178,7 @@ class MarsJumperEnvCfg(ManagerBasedRLEnvCfg):
         self.is_finite_horizon = True
                 
         self.crouch_to_takeoff_height_trigger = 0.08 #0.22 #Threshold for transitioning from takeoff to flight phase
-        self.takeoff_to_flight_height_trigger = 0.22 #robot max standing height is 22cm 
+        self.takeoff_to_flight_height_trigger = 0.15 #robot max standing height is 22cm 
         self.flight_to_landing_height_trigger = 0.30 #robot might come in tiled, so we give it a bit more room
         
         self.real_time_control_dt = 1/100
@@ -191,7 +192,8 @@ class MarsJumperEnvCfg(ManagerBasedRLEnvCfg):
             resolution=(1280, 720),
         )
         self.mars_gravity = -3.721
-        self.sim.gravity = (0.0, 0.0, self.mars_gravity)
+        self.earth_gravity = -9.81
+        self.sim.gravity = (0.0, 0.0, self.earth_gravity)
         self.decimation = int(self.real_time_control_dt / self.sim.dt) #Number of physics steps per env step 
  
         self.sim.render_interval = self.decimation #Number of physics steps between render frames

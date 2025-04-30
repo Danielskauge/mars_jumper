@@ -22,18 +22,18 @@ from terms import terminations
 from robot.robot_cfg import MarsJumperRobotCfg
 from terms.phase import Phase
 
-MAX_EPISODE_LENGTH_S = 5.0
+MAX_EPISODE_LENGTH_S = 3.0
 DEG2RAD = np.pi/180
 
 @configclass
 class CommandRangesCfg:
     """Configuration for command ranges."""
-    mars_gravity_abs = 3.721    
-    initial_target_height = 0.5 #m
-    initial_vel = 2.2 #float(np.sqrt(mars_gravity_abs * initial_target_height)) #m/s
+    earth_gravity_abs = 9.81
+    initial_target_height = 0.4 #m
+    initial_vel = float(np.sqrt(earth_gravity_abs * initial_target_height)) #m/s
     
     final_target_height = 1.5 #m
-    final_vel = float(np.sqrt(mars_gravity_abs * final_target_height)) #m/s
+    final_vel = float(np.sqrt(earth_gravity_abs * final_target_height)) #m/s
     
     initial_pitch_range: Tuple[float, float] = (0.0, 0.0) # Initial pitch range
     initial_magnitude_range: Tuple[float, float] = (initial_vel, initial_vel) # Initial magnitude range
@@ -127,8 +127,9 @@ class RewardsCfg:
     """
     #TAKEOFF PHASE
     relative_cmd_error = RewardTermCfg(func=rewards.relative_cmd_error,
-                                       params={"scale": 7.0, "kernel": "exponential"},
-                                       weight=2.0,
+                                       params={"scale": 7.0, 
+                                               "kernel": rewards.Kernel.EXPONENTIAL},
+                                       weight=4.0,
     )
 
 
@@ -136,26 +137,32 @@ class RewardsCfg:
     # attitude_error_at_transition_to_landing = RewardTermCfg(func=rewards.attitude_error_at_transition_to_landing, 
     #                                                         params={"scale": 11.0},
     #                                                         weight=1)
-    # attitude_error_on_way_down = RewardTermCfg(func=rewards.attitude_error_on_way_down, 
-    #                                           params={"scale": 11.0},
-    #                                           weight=1)
+    landing_base_height = RewardTermCfg(func=rewards.landing_base_height,
+                                   params={"target_height": 0.12, 
+                                           "kernel": rewards.Kernel.INVERSE_SQUARE,
+                                           "scale": 10.0},
+                                   weight=1)
+    
+    attitude_error_on_way_down = RewardTermCfg(func=rewards.attitude_error_on_way_down, 
+                                              params={"scale": 11.0},
+                                              weight=0.1)
     attitude_rotation = RewardTermCfg(func=rewards.attitude_rotation_magnitude, 
-                                      params={"kernel": "inverse_quadratic", "scale": 11.0},
-                                      weight=1)
+                                      params={"kernel": "inverse_quadratic", 
+                                              "scale": 11.0,
+                                              "phases": [Phase.LANDING]},
+                                      weight=0.1)
+
+    # is_alive_at_landing = RewardTermCfg(func=rewards.is_alive, 
+    #                                     params={"phases": [Phase.LANDING]},
+    #                                     weight=0.01)
     
-    # is_alive_in_landing = RewardTermCfg(func=custom_rewards.is_alive, 
-    #                                     params={"phases": [Phase.LANDING, Phase.FLIGHT]},
-    #                                     weight=1)
-    is_terminated = RewardTermCfg(func=mdp.is_terminated_term, weight= -0.5, params={"term_keys": ["base_contact", "bad_orientation"]})
+    is_terminated = RewardTermCfg(func=mdp.is_terminated_term, weight= -1, params={"term_keys": ["bad_orientation"]})
     
-    #ALL PHASES
-    joint_vel_l1 = RewardTermCfg(func=mdp.joint_vel_l1,
-                                 params={"asset_cfg": SceneEntityCfg("robot")},
-                                 weight= 0.0#-0.001,
-    )
-    action_rate_l2 = RewardTermCfg(func=mdp.action_rate_l2, 
-                                   weight= 0.0#-0.01)
-    )
+    # joint_vel_l1 = RewardTermCfg(func=mdp.joint_vel_l1,
+    #                              params={"asset_cfg": SceneEntityCfg("robot")},
+    #                              weight= 0.0#-0.001,
+    # )
+
     dof_pos_limits = RewardTermCfg(func=mdp.joint_pos_limits, 
                                    weight=-0.01)
     
@@ -171,10 +178,12 @@ class RewardsCfg:
 @configclass
 class TerminationsCfg:
     """Termination terms for the MDP."""
-    landed = TerminationTermCfg(func=terminations.landed, time_out=False)
+    #landed = TerminationTermCfg(func=terminations.landed, time_out=False)
     time_out = TerminationTermCfg(func=mdp.time_out, time_out=True)
-    base_contact = TerminationTermCfg(func=mdp.illegal_contact, params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=[".*THIGH.*", ".*SHANK.*", ".*HIP.*", ".*base.*"]), "threshold": 0.2})
-    bad_orientation = TerminationTermCfg(func=mdp.bad_orientation, params={"asset_cfg": SceneEntityCfg("robot", body_names="base"), "limit_angle": np.pi/3})
+    bad_orientation = TerminationTermCfg(func=terminations.bad_orientation, params={
+        "limit_angle": np.pi/3, 
+        "phases": [Phase.TAKEOFF, Phase.LANDING]
+    })
     # self_collision = TerminationTermCfg(func=custom_terminations.self_collision, params={"asset_cfg": SceneEntityCfg("robot", body_names=".*"), "threshold": 1.0}) #TODO: implement
     
 @configclass
@@ -199,7 +208,7 @@ class FullJumpEnvCfg(ManagerBasedRLEnvCfg):
     rewards: RewardsCfg = RewardsCfg()
     terminations: TerminationsCfg = TerminationsCfg()
     events: EventCfg = EventCfg()
-    curriculum: CurriculumCfg = CurriculumCfg()
+    #curriculum: CurriculumCfg = CurriculumCfg()
     is_finite_horizon: bool = True
 
     def __post_init__(self):
@@ -212,11 +221,11 @@ class FullJumpEnvCfg(ManagerBasedRLEnvCfg):
         self.flight_angle_error_threshold = 15*DEG2RAD
         
         self.crouch_to_takeoff_height_trigger = 0.08 #0.22 #Threshold for transitioning from takeoff to flight phase
-        self.takeoff_to_flight_height_trigger = 0.22 #robot max standing height is 22cm
-        self.flight_to_landing_height_trigger = 0.30 #robot might come in tiled, so we give it a bit more room
+        self.takeoff_to_flight_height_trigger = 0.15#robot max standing height is 22cm
+        self.flight_to_landing_height_trigger = 0.20 #robot might come in tiled, so we give it a bit more room
         
-        self.real_time_control_dt = 1/100
-        self.sim.dt = 1/400 #Physics time step, also the torque update rate
+        self.real_time_control_dt = 1/120
+        self.sim.dt = 1/360 #Physics time step, also the torque update rate
         self.episode_length_s = MAX_EPISODE_LENGTH_S
         self.viewer = ViewerCfg(
             eye=[0, 0.5, 0.04],

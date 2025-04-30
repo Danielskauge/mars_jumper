@@ -10,6 +10,7 @@ specify the reward function and its parameters.
 """
 
 from __future__ import annotations
+from enum import IntEnum
 import torch
 from typing import TYPE_CHECKING, Literal
 
@@ -22,9 +23,68 @@ from isaaclab.envs import ManagerBasedRLEnv
 from isaaclab.envs import mdp
 from isaaclab.assets import Articulation
 from terms.utils import convert_command_to_euclidean_vector, get_center_of_mass_lin_vel
+
+
+class Kernel(IntEnum):
+    INVERSE_LINEAR = 0
+    INVERSE_SQUARE = 1
+    EXPONENTIAL = 2
+    LINEAR = 3
+    SQUARE = 4
+
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
-    from envs.env import MarsJumperEnv
+    from envs.takeoff_env import MarsJumperEnv
+    
+
+    
+    
+def action_rate_l2(env: ManagerBasedRLEnv, phases: list[Phase]) -> torch.Tensor:
+    """Penalize the rate of change of the actions using L2 squared kernel."""
+    reward_tensor = torch.zeros(env.num_envs, device=env.device)
+    active_envs = torch.zeros(env.num_envs, device=env.device)
+    for phase in phases:
+        active_envs = torch.logical_or(active_envs, env.jump_phase == phase)
+        
+    reward_tensor[active_envs] = torch.sum(torch.square(env.action_manager.action - env.action_manager.prev_action), dim=1)
+    return reward_tensor
+    
+def landing_base_height(env: ManagerBasedRLEnv,
+                           asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+                           sensor_cfg: SceneEntityCfg | None = None,
+                           target_height: float = 0.0,
+                           kernel: Kernel = Kernel.INVERSE_LINEAR,
+                           scale: float = 1.0) -> torch.Tensor:
+    """Penalize asset height from its target using L2 squared kernel.
+
+    Note:
+        For flat terrain, target height is in the world frame. For rough terrain,
+        sensor readings can adjust the target height to account for the terrain.
+    """
+    # extract the used quantities (to enable type-ﬁﬁﬁhinting†)
+    landing_envs = env.jump_phase == Phase.LANDING
+    reward_tensor = torch.zeros(env.num_envs, device=env.device)
+    asset: RigidObject = env.scene[asset_cfg.name]
+    if sensor_cfg is not None:
+        sensor: RayCaster = env.scene[sensor_cfg.name]
+        # Adjust the target height using the sensor data
+        adjusted_target_height = target_height + torch.mean(sensor.data.ray_hits_w[..., 2], dim=1)
+    else:
+        # Use the provided target height directly for flat terrain
+        adjusted_target_height = target_height
+    # Compute the L2 squared penalty
+    if kernel == Kernel.INVERSE_LINEAR:
+        reward_tensor[landing_envs] = 1 / (1 + scale * (asset.data.root_pos_w[landing_envs, 2] - adjusted_target_height))
+    elif kernel == Kernel.INVERSE_SQUARE:
+        reward_tensor[landing_envs] = 1 / (1 + scale * (asset.data.root_pos_w[landing_envs, 2] - adjusted_target_height)**2)
+    elif kernel == Kernel.EXPONENTIAL:
+        reward_tensor[landing_envs] = torch.exp(-scale * (asset.data.root_pos_w[landing_envs, 2] - adjusted_target_height))
+    elif kernel == Kernel.LINEAR:
+        reward_tensor[landing_envs] = (asset.data.root_pos_w[landing_envs, 2] - adjusted_target_height)
+    elif kernel == Kernel.SQUARE:
+        reward_tensor[landing_envs] = (asset.data.root_pos_w[landing_envs, 2] - adjusted_target_height)**2
+    
+    return reward_tensor
     
 def joint_vel_l1(env: ManagerBasedRLEnv, phases: list[Phase]) -> torch.Tensor:
     """Penalize joint velocities on the articulation using an L1-kernel."""
@@ -33,10 +93,7 @@ def joint_vel_l1(env: ManagerBasedRLEnv, phases: list[Phase]) -> torch.Tensor:
     for phase in phases:
         active_envs = torch.logical_or(active_envs, env.jump_phase == phase)
         
-    if not torch.any(active_envs):
-        print("No active environments for joint_vel_l1 reward")
-        return torch.zeros(env.num_envs, device=env.device)
-    
+
     asset_cfg = SceneEntityCfg("robot")
     asset: Articulation = env.scene[asset_cfg.name]
     reward_tensor = torch.zeros(env.num_envs, device=env.device)
@@ -50,16 +107,12 @@ def action_rate_l2(env: ManagerBasedRLEnv, phases: list[Phase]) -> torch.Tensor:
     for phase in phases:
         active_envs = torch.logical_or(active_envs, env.jump_phase == phase)
         
-    if not torch.any(active_envs):
-        print("No active environments for action_rate_l2 reward")
-        return torch.zeros(env.num_envs, device=env.device)
-    
     reward_tensor[active_envs] = torch.sum(torch.square(env.action_manager.action[active_envs] - env.action_manager.prev_action[active_envs]), dim=1)
     return reward_tensor
 
 
     
-def cmd_error(env: ManagerBasedRLEnv, scale: float = 0.1, kernel: str = "inverse_linear") -> torch.Tensor:
+def cmd_error(env: ManagerBasedRLEnv, kernel: Kernel, scale: float) -> torch.Tensor:
     """Computes reward based on distance between robot's velocity vector and commanded takeoff vector.
     
     Only active during takeoff phase. Returns values in [0,1] where 1 means perfect tracking.
@@ -81,11 +134,11 @@ def cmd_error(env: ManagerBasedRLEnv, scale: float = 0.1, kernel: str = "inverse
     reward_tensor = torch.zeros(env.num_envs, device=env.device)
     relative_error = torch.norm(robot_vel_vec - cmd_vec, dim=-1) / torch.norm(cmd_vec, dim=-1)
     takeoff_rewards = torch.zeros_like(relative_error)
-    if kernel == "exponential":
+    if kernel == Kernel.EXPONENTIAL:
         takeoff_rewards = torch.exp(-scale*relative_error)
-    elif kernel == "inverse_linear":
+    elif kernel == Kernel.INVERSE_LINEAR:
         takeoff_rewards = 1/(1 + scale*relative_error)
-    elif kernel == "inverse_square":
+    elif kernel == Kernel.INVERSE_SQUARE:
         takeoff_rewards = 1/(1 + scale*relative_error**2)
 
     # Check vertical velocity (assuming index 2 is vertical)
@@ -100,7 +153,7 @@ def cmd_error(env: ManagerBasedRLEnv, scale: float = 0.1, kernel: str = "inverse
     
     return reward_tensor
 
-def relative_cmd_error(env: ManagerBasedRLEnv, scale: float = 0.1, kernel: str = Literal["exponential", "inverse_linear", "inverse_square"]) -> torch.Tensor:
+def relative_cmd_error(env: ManagerBasedRLEnv, kernel: Kernel, scale: float) -> torch.Tensor:
     """Computes reward based on relative error between robot's velocity and commanded takeoff vector.
     
     Similar to cmd_error() but normalizes error by command magnitude to be scale-invariant.
@@ -118,7 +171,6 @@ def relative_cmd_error(env: ManagerBasedRLEnv, scale: float = 0.1, kernel: str =
     """
     takeoff_envs = env.jump_phase == Phase.TAKEOFF
     if not torch.any(takeoff_envs):
-        print("No active environments for relative_cmd_error reward")
         return torch.zeros(env.num_envs, device=env.device)
     
     cmd = env.command[takeoff_envs]
@@ -127,11 +179,11 @@ def relative_cmd_error(env: ManagerBasedRLEnv, scale: float = 0.1, kernel: str =
     reward_tensor = torch.zeros(env.num_envs, device=env.device)
     relative_error = torch.norm(robot_vel_vec - cmd_vec, dim=-1) / torch.norm(cmd_vec, dim=-1)
     takeoff_rewards = torch.zeros_like(relative_error)
-    if kernel == "exponential":
+    if kernel == Kernel.EXPONENTIAL:
         takeoff_rewards = torch.exp(-scale*relative_error)
-    elif kernel == "inverse_linear":
+    elif kernel == Kernel.INVERSE_LINEAR:
         takeoff_rewards = 1/(1 + scale*relative_error)
-    elif kernel == "inverse_square":
+    elif kernel == Kernel.INVERSE_SQUARE:
         takeoff_rewards = 1/(1 + scale*relative_error**2)
 
     # Check vertical velocity (assuming index 2 is vertical)
@@ -156,7 +208,6 @@ def flat_orientation(env: ManagerBasedRLEnv, phases: list[Phase]) -> torch.Tenso
         active_envs = torch.logical_or(active_envs, env.jump_phase == phase)
         
     if not torch.any(active_envs):
-        print("No active environments for flat_orientation reward")
         return torch.zeros(env.num_envs, device=env.device)
     
     reward_tensor = torch.zeros(env.num_envs, device=env.device)
@@ -656,7 +707,7 @@ def attitude_error_at_transition_to_landing(env: ManagerBasedRLEnv, scale: float
     reward_tensor[reward_envs] = 1/(1 + scale * torch.abs(angle)**2)
     return reward_tensor
 
-def attitude_rotation_magnitude(env: ManagerBasedRLEnv, kernel: str = "inverse_linear", scale: float | int = 1.0) -> torch.Tensor:
+def attitude_rotation_magnitude(env: ManagerBasedRLEnv, kernel: str = "inverse_linear", scale: float | int = 1.0, phases: list[Phase] = [Phase.FLIGHT]) -> torch.Tensor:
     """Penalize any rotation from upright orientation using rotation vector magnitude.
     
     The rotation vector magnitude represents the total rotation angle in radians.
@@ -665,8 +716,10 @@ def attitude_rotation_magnitude(env: ManagerBasedRLEnv, kernel: str = "inverse_l
     - Large rotation -> reward approaches 0.0
     """
     reward_tensor = torch.zeros(env.num_envs, device=env.device)
-    flight_envs = env.jump_phase == Phase.FLIGHT
-    quat = env.robot.data.root_quat_w[flight_envs]
+    active_envs = torch.zeros(env.num_envs, device=env.device)
+    for phase in phases:
+        active_envs = torch.logical_or(active_envs, env.jump_phase == phase)
+    quat = env.robot.data.root_quat_w[active_envs]
     
     # Convert quaternion to rotation vector (axis-angle)
     # For quaternion q = [w,x,y,z], rotation vector = 2*arccos(w)*[x,y,z]/sqrt(1-w^2)
@@ -677,15 +730,15 @@ def attitude_rotation_magnitude(env: ManagerBasedRLEnv, kernel: str = "inverse_l
     
     # Return exponential of negative rotation magnitude to bound between [0,1]
     if kernel == "inverse_linear":
-        reward_tensor[flight_envs] = 1 / (1 + scale * angle)
+        reward_tensor[active_envs] = 1 / (1 + scale * angle)
     elif kernel == "inverse_quadratic":
-        reward_tensor[flight_envs] = 1 / (1 + scale * angle**2)
+        reward_tensor[active_envs] = 1 / (1 + scale * angle**2)
     elif kernel == "exponential":
-        reward_tensor[flight_envs] = torch.exp(-scale * angle)
+        reward_tensor[active_envs] = torch.exp(-scale * angle)
     elif kernel == "square":
-        reward_tensor[flight_envs] = torch.square(angle)
+        reward_tensor[active_envs] = torch.square(angle)
     elif kernel == "linear":
-        reward_tensor[flight_envs] = torch.abs(angle)
+        reward_tensor[active_envs] = torch.abs(angle)
     else:
         raise ValueError(f"Invalid kernel: {kernel}")
     
