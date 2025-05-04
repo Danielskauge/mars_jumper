@@ -2,14 +2,8 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 import os
-from typing import TYPE_CHECKING
-
-import wandb
-import yaml
-from terms.phase import Phase
+from typing import TYPE_CHECKING, List
 import torch
-import numpy as np
-
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.assets import Articulation
 from isaaclab.sensors import ContactSensor
@@ -17,6 +11,73 @@ from isaaclab.sensors import ContactSensor
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedEnv, ManagerBasedRLEnv
     
+def sum_contact_forces(env: ManagerBasedEnv, env_ids: Sequence[int]) -> torch.Tensor:
+    """Sum the contact forces of the robot, expect feet"""
+    sensor_cfg = SceneEntityCfg(name="contact_sensor", body_names=[".*THIGH.*", ".*SHANK.*", ".*HIP.*", ".*base.*"])
+    contact_sensor: ContactSensor = env.scene[sensor_cfg.name]
+    net_contact_forces = contact_sensor.data.net_forces_w[env_ids, sensor_cfg.body_ids] 
+    sum_forces_magnitude = torch.sum(net_contact_forces, dim=-1) #shape [num_envs]
+    return sum_forces_magnitude
+    
+def all_feet_ok_air_time(env: ManagerBasedEnv, air_time_threshold: float) -> torch.Tensor:
+    air_time_above_threshold = torch.ones(env.num_envs, device=env.device, dtype=torch.bool)
+    for sensor_name in env.cfg.feet_ground_contact_name_map.values():
+        sensor: ContactSensor = env.scene[sensor_name]
+        air_time_above_threshold = torch.logical_and(air_time_above_threshold, (sensor.data.air_time > air_time_threshold))
+    return air_time_above_threshold
+
+def all_feet_off_the_ground(env: ManagerBasedEnv) -> torch.Tensor:
+    """Check if all feet are off the ground using the general contact sensor."""
+    robot: Articulation = env.scene[SceneEntityCfg("robot").name]
+    contact_sensor: ContactSensor = env.scene["contact_sensor"]
+
+    # Find the indices corresponding to the foot bodies within the contact sensor data
+    foot_body_indices, _ = contact_sensor.find_bodies([".*FOOT"])
+    if not foot_body_indices:
+        # Handle case where no foot bodies are found in the sensor (shouldn't happen with prim_path=".*")
+        print("[Warning] No foot bodies found in the general contact sensor.")
+        return torch.ones(env.num_envs, device=env.device, dtype=torch.bool)
+
+    # Get net forces for all bodies from the general sensor
+    # Use history[0] to get the most recent force data
+    net_forces = contact_sensor.data.net_forces_w_history[:, 0, :, :]
+    # Select forces only for the foot bodies
+    foot_forces = net_forces[:, foot_body_indices, :] # Shape: [num_envs, num_feet, 3]
+
+    # Calculate the magnitude of forces for each foot
+    foot_force_magnitudes = torch.norm(foot_forces, dim=-1) # Shape: [num_envs, num_feet]
+
+    # Check if *all* foot force magnitudes are below the threshold
+    all_feet_off = torch.all(foot_force_magnitudes <= contact_sensor.cfg.force_threshold, dim=1) # Shape: [num_envs]
+
+    return all_feet_off
+
+def any_feet_on_the_ground(env: ManagerBasedEnv) -> torch.Tensor:
+    """Check if any feet are on the ground using the general contact sensor."""
+    robot: Articulation = env.scene[SceneEntityCfg("robot").name]
+    contact_sensor: ContactSensor = env.scene["contact_sensor"]
+
+    # Find the indices corresponding to the foot bodies within the contact sensor data
+    foot_body_indices, _ = contact_sensor.find_bodies([".*FOOT"])
+    if not foot_body_indices:
+        # Handle case where no foot bodies are found in the sensor
+        print("[Warning] No foot bodies found in the general contact sensor.")
+        return torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
+
+    # Get net forces for all bodies from the general sensor
+    # Use history[0] to get the most recent force data
+    net_forces = contact_sensor.data.net_forces_w_history[:, 0, :, :]
+    # Select forces only for the foot bodies
+    foot_forces = net_forces[:, foot_body_indices, :] # Shape: [num_envs, num_feet, 3]
+
+    # Calculate the magnitude of forces for each foot
+    foot_force_magnitudes = torch.norm(foot_forces, dim=-1) # Shape: [num_envs, num_feet]
+
+    # Check if *any* foot force magnitude is above the threshold
+    any_feet_on = torch.any(foot_force_magnitudes > contact_sensor.cfg.force_threshold, dim=1) # Shape: [num_envs]
+
+    return any_feet_on
+
 def get_center_of_mass_lin_vel(env: ManagerBasedEnv) -> torch.Tensor:
     """
     Returns the center of mass linear velocity of the robot.
@@ -86,121 +147,3 @@ def sample_command(env: ManagerBasedRLEnv, env_ids: Sequence[int]) -> torch.Tens
     pitch_cmd = torch.empty(len(env_ids), device=env.device).uniform_(*env.cmd_pitch_range)
     magnitude_cmd = torch.empty(len(env_ids), device=env.device).uniform_(*env.cmd_magnitude_range)
     return torch.stack([pitch_cmd, magnitude_cmd], dim=-1)
-
-def update_jump_phase(
-    env: ManagerBasedEnv, 
-) -> None:
-    """Update the robot phase for the specified environments"""
-    base_height = env.robot.data.root_pos_w[:, 2]
-    base_com_vertical_vel = get_center_of_mass_lin_vel(env)[:, 2]
-    
-    crouch_envs = env.jump_phase == Phase.CROUCH
-    takeoff_envs = env.jump_phase == Phase.TAKEOFF
-    flight_envs = env.jump_phase == Phase.FLIGHT
-    
-    env.prev_jump_phase = env.jump_phase.clone()
-    
-    env.jump_phase[crouch_envs & (base_height > env.cfg.crouch_to_takeoff_height_trigger)] = Phase.TAKEOFF
-    
-    all_feet_off_ground = all_feet_off_the_ground(env)
-    # Apply takeoff to flight transition
-    env.jump_phase[takeoff_envs & all_feet_off_ground & (base_height > env.cfg.takeoff_to_flight_height_trigger)] = Phase.FLIGHT
-    
-    #neg_vertical_vel_envs = base_com_vertical_vel < 0.1
-    #any_feet_on_ground = any_feet_on_the_ground(env)
-    robot_on_ground = robot_touches_ground(env)
-    env.jump_phase[flight_envs & robot_on_ground] = Phase.LANDING
-
-def all_feet_off_the_ground(env: ManagerBasedEnv) -> torch.Tensor:
-    """Check if the feet are off the ground"""
-    contact_sensor: ContactSensor = env.scene[SceneEntityCfg("contact_forces").name]
-    feet_idx, _ = env.robot.find_bodies(".*FOOT.*")
-    feet_forces = contact_sensor.data.net_forces_w[:, feet_idx] # Tensor shape: [num_envs, num_feet, 3]
-    feet_force_mag = torch.norm(feet_forces, dim=-1) # Tensor shape: [num_envs, num_feet]
-    return torch.all(feet_force_mag <= contact_sensor.cfg.force_threshold, dim=-1) # Tensor shape: [num_envs]
-
-def robot_touches_ground(env: ManagerBasedEnv) -> torch.Tensor:
-    contact_sensor: ContactSensor = env.scene[SceneEntityCfg("contact_forces").name]    
-    forces = contact_sensor.data.net_forces_w # Tensor shape: [num_envs, num_feet, 3]
-    force_mag = torch.norm(forces, dim=-1) # Tensor shape: [num_envs, num_feet]
-    return torch.any(force_mag > contact_sensor.cfg.force_threshold, dim=-1) # Tensor shape: [num_envs]
-
-def any_feet_on_the_ground(env: ManagerBasedEnv) -> torch.Tensor:
-    """Check if any feet are on the ground"""
-    contact_sensor: ContactSensor = env.scene[SceneEntityCfg("contact_forces").name]
-    feet_idx, _ = env.robot.find_bodies(".*FOOT.*")
-    feet_forces = contact_sensor.data.net_forces_w[:, feet_idx] # Tensor shape: [num_envs, num_feet, 3]
-    feet_force_mag = torch.norm(feet_forces, dim=-1) # Tensor shape: [num_envs, num_feet]
-    return torch.any(feet_force_mag > contact_sensor.cfg.force_threshold, dim=-1) # Tensor shape: [num_envs]
-
-def log_phase_info(env: ManagerBasedEnv, extras: dict):
-    """Logs the distribution of phases and average height per phase to the extras dict.
-    
-    Args:
-        env: Environment instance
-        extras: Extras dictionary to update with logs
-        log_frequency: How often to compute full statistics (default: every 20 steps)
-                      Set to 1 to log every step
-    """
-    # Quick exit if it's not time to log yet - use a step counter on the env
-    
-    # Keep computation on GPU as much as possible to avoid transfers
-    
-    # Calculate phase distribution on GPU
-    num_envs = env.num_envs
-    phases = env.jump_phase  # Keep on GPU
-    
-    # Calculate statistics for each phase directly on GPU
-    phase_log = {}
-    for phase_enum in Phase:
-        phase_val = phase_enum.value
-        phase_name = phase_enum.name
-        
-        # Calculate count and percentage
-        phase_mask = (phases == phase_val)
-        count = torch.sum(phase_mask).item()  # Single value transfer
-        phase_log[f"phase_dist/{phase_name}"] = count / num_envs
-        
-        # Calculate average height only if environments exist in this phase
-        if count > 0:
-            # Compute mean height directly on GPU, only transfer the result
-            heights = env.robot.data.root_pos_w[:, 2]
-            avg_height = torch.mean(heights[phase_mask]).item()  # Single value transfer
-            phase_log[f"avg_height/{phase_name}"] = avg_height
-        else:
-            phase_log[f"avg_height/{phase_name}"] = 0.0
-             
-    extras["log"].update(phase_log)
-
-# def check_crouch_to_takeoff(env: ManagerBasedRLEnv, robot: Articulation, env_ids: Sequence[int] = None) -> torch.Tensor:
-#     """Check if the robot should transition from crouch to takeoff"""
-#     angle_error_threshold_rad = 0.1*torch.pi
-#     target_knee_angle = torch.pi*0.8
-#     target_hip_angle = -torch.pi*0.4
-#     target_abductor_angle = 0.0
-#     max_joint_vel = 0.1
-
-#     #if all the current angles of a given robot are within the threshold, and joint velocities are close to 0, then transition to takeoff
-#     joint_pos = robot.data.joint_pos[env_ids]
-#     joint_vel = robot.data.joint_vel[env_ids]
-#     knee_joints_idx, _ = robot.find_joints(".*KFE")
-#     hip_joints_idx, _ = robot.find_joints(".*HFE")
-#     abductor_joints_idx, _ = robot.find_joints(".*HAA")
-#     knee_angle_error = torch.abs(joint_pos[:, knee_joints_idx] - target_knee_angle)
-#     hip_angle_error = torch.abs(joint_pos[:, hip_joints_idx] - target_hip_angle)
-#     abductor_angle_error = torch.abs(joint_pos[:, abductor_joints_idx] - target_abductor_angle)
-#     joint_vel_error = torch.abs(joint_vel)
-    
-#     # Check if joint angles are within threshold and velocities are low
-#     angle_conditions = torch.cat([
-#         knee_angle_error < angle_error_threshold_rad,
-#         hip_angle_error < angle_error_threshold_rad,
-#         abductor_angle_error < angle_error_threshold_rad,
-#         joint_vel_error < max_joint_vel
-#     ], dim=1) #shape (num_envs, 4)
-    
-#     transition_mask = torch.all(angle_conditions, dim=1)
-    
-#     return env_ids[transition_mask]
-    
-

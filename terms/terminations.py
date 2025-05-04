@@ -1,29 +1,22 @@
-# Copyright (c) 2022-2025, The Isaac Lab Project Developers.
-# All rights reserved.
-#
-# SPDX-License-Identifier: BSD-3-Clause
-
-"""Common functions that can be used to activate certain terminations.
-
-The functions can be passed to the :class:`isaaclab.managers.TerminationTermCfg` object to enable
-the termination introduced by the function.
-"""
 
 from __future__ import annotations
-
 import numpy as np
 import torch
 from typing import TYPE_CHECKING
-
 from isaaclab.assets import RigidObject
 from isaaclab.assets.articulation.articulation import Articulation
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.sensors import ContactSensor
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
-    from envs.takeoff_env import MarsJumperEnv
-    from envs.attitude_env import AttitudeEnv
 from terms.phase import Phase
+
+def bad_takeoff(
+    env: ManagerBasedRLEnv,
+    relative_error_threshold: float = 0.1,
+) -> torch.Tensor:
+    """Terminate when the robot's takeoff is too far from the desired takeoff vector."""
+    return (env.takeoff_relative_error > relative_error_threshold) & (env.jump_phase == Phase.FLIGHT)
 
 def bad_orientation(
     env: ManagerBasedRLEnv,

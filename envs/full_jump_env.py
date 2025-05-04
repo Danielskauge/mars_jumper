@@ -4,8 +4,9 @@ from isaaclab.envs import ManagerBasedRLEnv, VecEnvStepReturn
 from collections.abc import Sequence
 import torch
 from isaaclab.managers.scene_entity_cfg import SceneEntityCfg
-from terms.phase import Phase
-from terms.utils import update_jump_phase, sample_command, convert_command_to_euclidean_vector, log_phase_info, get_center_of_mass_lin_vel
+from isaaclab.sensors import ContactSensor
+from terms.phase import Phase, update_jump_phase, log_phase_info
+from terms.utils import sample_command, convert_command_to_euclidean_vector, get_center_of_mass_lin_vel, sum_contact_forces
 import logging
 
 logger = logging.getLogger(__name__)
@@ -19,7 +20,8 @@ class FullJumpEnv(ManagerBasedRLEnv):
         
         #Takeoff Success
         self.takeoff_success = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
-        self.liftoff_com_lin_vel = torch.zeros(self.num_envs, 3, device=self.device) 
+        self.takeoff_vec = torch.zeros(self.num_envs, 3, device=self.device)
+        self.takeoff_relative_error = torch.zeros(self.num_envs, device=self.device)
         self.takeoff_success_rate = 0.0
         
         #Flight Success
@@ -47,6 +49,9 @@ class FullJumpEnv(ManagerBasedRLEnv):
         self.cmd_pitch_range = cfg.command_ranges.initial_pitch_range
         self.cmd_magnitude_range = cfg.command_ranges.initial_magnitude_range
 
+        # Store references to foot sensors (optional but can be convenient)
+        self.body_contact_sensor: ContactSensor = self.scene["contact_sensor"]
+
     def _takeoff_success(self, env_ids: Sequence[int]) -> dict | None:
         """
         Success rate is calculated by successfull takeoffs divided by the number of reset environments.
@@ -72,13 +77,13 @@ class FullJumpEnv(ManagerBasedRLEnv):
         if num_has_taken_off > 0:
             has_taken_off_ids = env_ids[has_taken_off]
             cmd_vec = convert_command_to_euclidean_vector(self.command[has_taken_off_ids])
-            liftoff_vec = self.liftoff_com_lin_vel[has_taken_off_ids]
+            takeoff_vec = self.takeoff_vec[has_taken_off_ids]
             
-            cos_angle = torch.sum(cmd_vec * liftoff_vec, dim=-1) / (torch.norm(cmd_vec, dim=-1) * torch.norm(liftoff_vec, dim=-1))
+            cos_angle = torch.sum(cmd_vec * takeoff_vec, dim=-1) / (torch.norm(cmd_vec, dim=-1) * torch.norm(takeoff_vec, dim=-1))
             angle_error = torch.acos(torch.clamp(cos_angle, min=-1.0, max=1.0))
-            relative_error = torch.norm(liftoff_vec - cmd_vec, dim=-1) / torch.norm(cmd_vec, dim=-1)
-            magnitude_ratio_error = torch.norm(liftoff_vec, dim=-1) / torch.norm(cmd_vec, dim=-1) - 1
-            
+            relative_error = torch.norm(takeoff_vec - cmd_vec, dim=-1) / torch.norm(cmd_vec, dim=-1)
+            self.takeoff_relative_error[has_taken_off_ids] = relative_error
+            magnitude_ratio_error = torch.norm(takeoff_vec, dim=-1) / torch.norm(cmd_vec, dim=-1) - 1
             magnitude_ok = torch.abs(magnitude_ratio_error) < self.cfg.takeoff_magnitude_ratio_error_threshold
             angle_ok = angle_error < self.cfg.takeoff_angle_error_threshold
             
@@ -93,7 +98,7 @@ class FullJumpEnv(ManagerBasedRLEnv):
             mean_angle_error = torch.mean(valid_angle_errors) if valid_angle_errors.numel() > 0 else 0.0
             
             return {
-                "taken_off_ratio": num_has_taken_off / num_reset_envs,
+                #"taken_off_ratio": num_has_taken_off / num_reset_envs,
                 "takeoff_angle_error": mean_angle_error,
                 "takeoff_magnitude_ratio_error": magnitude_ratio_error.mean().item(),
                 "takeoff_success_rate": self.takeoff_success_rate,
@@ -179,7 +184,7 @@ class FullJumpEnv(ManagerBasedRLEnv):
         
         transitioned_to_flight = (self.jump_phase == Phase.FLIGHT) & (self.prev_jump_phase == Phase.TAKEOFF)
         if torch.any(transitioned_to_flight):
-            self.liftoff_com_lin_vel[transitioned_to_flight] = get_center_of_mass_lin_vel(self)[transitioned_to_flight]
+            self.takeoff_vec[transitioned_to_flight] = get_center_of_mass_lin_vel(self)[transitioned_to_flight]
         
         transitioned_to_landing = (self.jump_phase == Phase.LANDING) & (self.prev_jump_phase == Phase.FLIGHT)
         if torch.any(transitioned_to_landing):
@@ -189,10 +194,16 @@ class FullJumpEnv(ManagerBasedRLEnv):
         obs_buf, reward_buf, terminated_buf, truncated_buf, extras = super().step(action)
         log_phase_info(self, extras)
         
-        # Log flight angle error for envs in flight phase
-        in_flight_phase = self.jump_phase == Phase.FLIGHT
-        if torch.any(in_flight_phase):
-            flight_quat = self.robot.data.root_quat_w[in_flight_phase]
+        takeoff_envs = self.jump_phase == Phase.TAKEOFF
+        flight_envs = self.jump_phase == Phase.FLIGHT
+        landing_envs = self.jump_phase == Phase.LANDING
+        
+        self.extras["log"]["takeoff_contact_forces"] = sum_contact_forces(self, takeoff_envs).mean().item()
+        self.extras["log"]["flight_contact_forces"] = sum_contact_forces(self, flight_envs).mean().item()
+        self.extras["log"]["landing_contact_forces"] = sum_contact_forces(self, landing_envs).mean().item()
+        
+        if torch.any(flight_envs):
+            flight_quat = self.robot.data.root_quat_w[flight_envs]
             flight_angle_error = self._abs_angle_error(flight_quat)
             mean_flight_angle_error = torch.mean(flight_angle_error).item()
             self.extras["log"]["flight_angle_error"] = mean_flight_angle_error
@@ -234,7 +245,8 @@ class FullJumpEnv(ManagerBasedRLEnv):
                 "running_success_rate": self.success_rate, # Log the running success rate
             })
 
-            self.liftoff_com_lin_vel[env_ids] = torch.zeros_like(self.liftoff_com_lin_vel[env_ids])
+            self.takeoff_vec[env_ids] = torch.zeros_like(self.takeoff_vec[env_ids])
+            self.takeoff_relative_error[env_ids] = torch.zeros_like(self.takeoff_relative_error[env_ids])
             self.body_angle_quat_at_landing[env_ids] = torch.zeros_like(self.body_angle_quat_at_landing[env_ids])
             self.body_ang_vel_at_landing[env_ids] = torch.zeros_like(self.body_ang_vel_at_landing[env_ids])
             

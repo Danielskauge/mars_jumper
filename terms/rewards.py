@@ -36,8 +36,16 @@ if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
     from envs.takeoff_env import MarsJumperEnv
     
-
-    
+def contact_forces(env: ManagerBasedRLEnv, sensor_cfg: SceneEntityCfg, kernel: Literal[Kernel.LINEAR, Kernel.SQUARE]) -> torch.Tensor:
+    """Penalize the contact forces of the robot except for the feet, using L2 squared kernel."""
+    contact_sensor: ContactSensor = env.scene[sensor_cfg.name]
+    net_contact_forces = contact_sensor.data.net_forces_w[:, sensor_cfg.body_ids] 
+    forces_magnitude = torch.norm(net_contact_forces, dim=-1) #shape [num_envs, num_bodies]
+    sum_forces_magnitude = torch.sum(forces_magnitude, dim=-1) #shape [num_envs]
+    if kernel == Kernel.LINEAR:
+        return sum_forces_magnitude
+    elif kernel == Kernel.SQUARE:
+        return torch.square(sum_forces_magnitude)
     
 def action_rate_l2(env: ManagerBasedRLEnv, phases: list[Phase]) -> torch.Tensor:
     """Penalize the rate of change of the actions using L2 squared kernel."""
@@ -704,7 +712,7 @@ def attitude_error_on_way_down(env: ManagerBasedRLEnv, scale: float | int = 1.0)
     reward_tensor[reward_envs] = 1/(1 + scale * torch.abs(angle)**2)
     return reward_tensor
 
-def attitude_error_at_transition_to_landing(env: ManagerBasedRLEnv, scale: float | int = 1.0) -> torch.Tensor:
+def attitude_at_landing(env: ManagerBasedRLEnv, scale: float | int = 1.0) -> torch.Tensor:
     """Rewards for no attitude rotation for robot at transition to landing. Uses inverse quadratic kernel."""
     reward_tensor = torch.zeros(env.num_envs, device=env.device)
     reward_envs = (env.jump_phase == Phase.LANDING) & (env.prev_jump_phase == Phase.FLIGHT)
