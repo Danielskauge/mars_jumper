@@ -19,21 +19,26 @@ from terms.phase import Phase
 
 MAX_EPISODE_LENGTH_S = 3.0
 DEG2RAD = np.pi/180
+EARTH_GRAVITY = 9.81
+MARS_GRAVITY = 3.721
+
+@configclass
+class MetricsBucketingCfg:
+    """Configuration for command bucketing and metric tracking."""
+    num_pitch_buckets: int = 1
+    num_magnitude_buckets: int = 1
 
 @configclass
 class CommandRangesCfg:
-    earth_gravity_abs = 9.81
-    initial_target_height = 0.5 #m
-    initial_vel = float(np.sqrt(earth_gravity_abs * initial_target_height)) #m/s
     
-    final_target_height = 1.5 #m
-    final_vel = float(np.sqrt(earth_gravity_abs * final_target_height)) #m/s
+    min_target_height = 0.5#m
+    max_target_height = 1 #m
     
-    initial_pitch_range: Tuple[float, float] = (0.0, 0.0) # Initial pitch range
-    initial_magnitude_range: Tuple[float, float] = (initial_vel, initial_vel) # Initial magnitude range
+    min_magnitude = float(np.sqrt(EARTH_GRAVITY * min_target_height)) #m/s
+    max_magnitude = float(np.sqrt(EARTH_GRAVITY * max_target_height)) #m/s
     
-    final_pitch_range: Tuple[float, float] = (0.0, 0.0) # Final pitch range
-    final_magnitude_range: Tuple[float, float] = (initial_vel, final_vel) # Final magnitude range
+    pitch_range: Tuple[float, float] = (0, 0) # Initial pitch range
+    magnitude_range: Tuple[float, float] = (min_magnitude, max_magnitude) # Initial magnitude range
     
 @configclass
 class MySceneCfg(InteractiveSceneCfg):
@@ -108,7 +113,7 @@ class EventCfg:
 class RewardsCfg:
 
     relative_cmd_error = RewardTermCfg(func=rewards.relative_cmd_error,
-                                       params={"scale": 7.0, 
+                                       params={"scale": 7, 
                                                "kernel": rewards.Kernel.EXPONENTIAL},
                                        weight=10.0,
     )
@@ -145,8 +150,8 @@ class RewardsCfg:
                                       params={"phases": [Phase.LANDING]},
                                       weight=-0.001)
     
-    landing_abduction_zero_pos = RewardTermCfg(func=rewards.landing_abduction_zero_pos,
-                                              weight=-0.01)
+    # landing_abduction_zero_pos = RewardTermCfg(func=rewards.landing_abduction_zero_pos,
+    #                                           weight=-0.01)
             
     is_terminated = RewardTermCfg(func=mdp.is_terminated_term, weight= -1, params={"term_keys": ["bad_orientation"]})
     
@@ -185,10 +190,10 @@ class TerminationsCfg:
         "phases": [Phase.TAKEOFF, Phase.FLIGHT, Phase.LANDING]
     })
     
-    illegal_contact = TerminationTermCfg(func=mdp.terminations.illegal_contact, 
-                                         params={
-                                             "sensor_cfg": SceneEntityCfg(name="contact_sensor", body_names=[".*THIGH.*", ".*SHANK.*", ".*HIP.*", ".*base.*"]),
-                                             "threshold": 10})
+    # illegal_contact = TerminationTermCfg(func=mdp.terminations.illegal_contact, 
+    #                                      params={
+    #                                          "sensor_cfg": SceneEntityCfg(name="contact_sensor", body_names=[".*THIGH.*", ".*SHANK.*", ".*HIP.*", ".*base.*"]),
+    #                                          "threshold": 10})
     # self_collision = TerminationTermCfg(func=custom_terminations.self_collision, params={"asset_cfg": SceneEntityCfg("robot", body_names=".*"), "threshold": 1.0}) #TODO: implement
     
 @configclass
@@ -213,8 +218,12 @@ class FullJumpEnvCfg(ManagerBasedRLEnvCfg):
     events: EventCfg = EventCfg()
     #curriculum: CurriculumCfg = CurriculumCfg()
     is_finite_horizon: bool = True
+    metrics_bucketing: MetricsBucketingCfg = MetricsBucketingCfg()
 
     def __post_init__(self):
+        # How often to print bucketed metrics (in total environment steps). 0 or less disables.
+        self.print_bucket_metrics_interval: int = 300 # Example: print every 100k env steps
+
         self.takeoff_magnitude_ratio_error_threshold = 0.1
         self.takeoff_angle_error_threshold_rad = 10*DEG2RAD
         

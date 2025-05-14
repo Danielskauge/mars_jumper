@@ -131,12 +131,70 @@ class FullJumpEnv(ManagerBasedRLEnv):
         
         #Command Curriculum
         self.command = torch.zeros(self.num_envs, 2, device=self.device)
-        self.cmd_pitch_range = cfg.command_ranges.initial_pitch_range
-        self.cmd_magnitude_range = cfg.command_ranges.initial_magnitude_range
+        self.cmd_pitch_range = cfg.command_ranges.pitch_range
+        self.cmd_magnitude_range = cfg.command_ranges.magnitude_range
 
         # Store references to foot sensors (optional but can be convenient)
         self.body_contact_sensor: ContactSensor = self.scene["contact_sensor"]
         
+        # Metrics Bucketing Initialization
+        self.pitch_bucket_info = None
+        self.magnitude_bucket_info = None
+        if self.cfg.metrics_bucketing is not None:
+            mb_cfg = self.cfg.metrics_bucketing
+
+            pitch_min, pitch_max = self.cfg.command_ranges.pitch_range
+            mag_min, mag_max = self.cfg.command_ranges.magnitude_range
+            
+            num_pitch_buckets = mb_cfg.num_pitch_buckets
+            num_magnitude_buckets = mb_cfg.num_magnitude_buckets
+
+            # If min and max are the same for a dimension, force num_buckets to 1 for that dimension
+            if pitch_min == pitch_max:
+                num_pitch_buckets = 1
+            if mag_min == mag_max:
+                num_magnitude_buckets = 1
+
+            if num_pitch_buckets <= 0: num_pitch_buckets = 1 # Ensure at least one bucket
+            if num_magnitude_buckets <= 0: num_magnitude_buckets = 1
+
+            pitch_width = (pitch_max - pitch_min) / num_pitch_buckets if num_pitch_buckets > 0 else 0
+            if num_pitch_buckets > 0 and pitch_width == 0 and pitch_min != pitch_max: # Avoid issues if range is non-zero but too small for float precision with num_buckets
+                 pitch_width = 1e-5 # nominal small width
+            elif num_pitch_buckets > 0 and pitch_width == 0 and pitch_min == pitch_max:
+                 pitch_width = 1.0 # If min=max, any value is in bucket 0, width is for calculation logic
+
+            magnitude_width = (mag_max - mag_min) / num_magnitude_buckets if num_magnitude_buckets > 0 else 0
+            if num_magnitude_buckets > 0 and magnitude_width == 0 and mag_min != mag_max:
+                magnitude_width = 1e-5
+            elif num_magnitude_buckets > 0 and magnitude_width == 0 and mag_min == mag_max:
+                magnitude_width = 1.0
+
+            self.pitch_bucket_info = {
+                "min": pitch_min, "max": pitch_max, "num": num_pitch_buckets,
+                "width": pitch_width
+            }
+            self.magnitude_bucket_info = {
+                "min": mag_min, "max": mag_max, "num": num_magnitude_buckets,
+                "width": magnitude_width
+            }
+
+            self.bucketed_takeoff_error_sum = torch.zeros(
+                (num_pitch_buckets, num_magnitude_buckets), dtype=torch.float32, device=self.device
+            )
+            self.bucketed_takeoff_error_count = torch.zeros(
+                (num_pitch_buckets, num_magnitude_buckets), dtype=torch.int64, device=self.device
+            )
+            self.bucketed_flight_angle_error_sum = torch.zeros(
+                (num_pitch_buckets, num_magnitude_buckets), dtype=torch.float32, device=self.device
+            )
+            self.bucketed_flight_angle_error_count = torch.zeros(
+                (num_pitch_buckets, num_magnitude_buckets), dtype=torch.int64, device=self.device
+            )
+
+        # Counter for periodic bucketing metric print
+        self.env_steps_since_last_bucket_print = 0
+
     def relative_takeoff_error(self, env_ids: Sequence[int]) -> torch.Tensor:
         cmd_vec = convert_command_to_euclidean_vector(self.command[env_ids])
         return torch.norm(self.max_takeoff_vel[env_ids] - cmd_vec, dim=-1) / torch.norm(cmd_vec, dim=-1)
@@ -316,6 +374,16 @@ class FullJumpEnv(ManagerBasedRLEnv):
         if hasattr(self, 'prev_feet_contact_state'): # Check if initialized
             self.prev_feet_contact_state = self._get_current_feet_contact_state().clone()
         
+        # --- Periodic Bucketed Metrics Logging ---
+        if self.cfg.metrics_bucketing is not None and \
+           self.cfg.print_bucket_metrics_interval > 0 and \
+           self.pitch_bucket_info is not None: # Check if bucketing is active
+            self.env_steps_since_last_bucket_print += 1 # Increment by 1 for each step() call
+            if self.env_steps_since_last_bucket_print >= self.cfg.print_bucket_metrics_interval:
+                self._log_bucketed_takeoff_errors()
+                self.env_steps_since_last_bucket_print = 0 # Reset the counter
+        # --- End Periodic Bucketed Metrics Logging ---
+        
         return obs_buf, reward_buf, terminated_buf, truncated_buf, extras
     
     def _get_current_feet_contact_state(self) -> torch.Tensor:
@@ -325,9 +393,92 @@ class FullJumpEnv(ManagerBasedRLEnv):
         contact_state = torch.norm(forces, dim=-1) > contact_sensor.cfg.force_threshold
         return contact_state
 
+    def _get_bucket_indices(self, pitch_cmds: torch.Tensor, magnitude_cmds: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        if self.pitch_bucket_info is None or self.magnitude_bucket_info is None:
+            # Should not be called if bucketing is not configured.
+            # Default to a single bucket (index 0) if called unexpectedly.
+            return torch.zeros_like(pitch_cmds, dtype=torch.long), torch.zeros_like(magnitude_cmds, dtype=torch.long)
+
+        p_info = self.pitch_bucket_info
+        m_info = self.magnitude_bucket_info
+
+        if p_info["num"] <= 0: # Should have been corrected to >= 1 in init
+            pitch_indices = torch.zeros_like(pitch_cmds, dtype=torch.long)
+        elif p_info["num"] == 1 or p_info["width"] == 0: # Single bucket or zero width (e.g. min=max)
+            pitch_indices = torch.zeros_like(pitch_cmds, dtype=torch.long)
+        else:
+            pitch_indices = ((pitch_cmds - p_info["min"]) / p_info["width"]).long()
+            pitch_indices = torch.clamp(pitch_indices, 0, p_info["num"] - 1)
+
+        if m_info["num"] <= 0:
+            magnitude_indices = torch.zeros_like(magnitude_cmds, dtype=torch.long)
+        elif m_info["num"] == 1 or m_info["width"] == 0:
+            magnitude_indices = torch.zeros_like(magnitude_cmds, dtype=torch.long)
+        else:
+            magnitude_indices = ((magnitude_cmds - m_info["min"]) / m_info["width"]).long()
+            magnitude_indices = torch.clamp(magnitude_indices, 0, m_info["num"] - 1)
+            
+        return pitch_indices, magnitude_indices
+
     def _reset_idx(self, env_ids: Sequence[int]):
         if len(env_ids) > 0:
-            
+            # -- Start Metrics Bucketing Collection --
+            if self.cfg.metrics_bucketing is not None and self.pitch_bucket_info is not None and self.magnitude_bucket_info is not None:
+                cmds_ended_episode = self.command[env_ids].clone()
+                takeoff_errors_ended_episode = self.takeoff_relative_error[env_ids].clone() # Metric for takeoff success
+                flight_angle_errors_ended_episode = self.angle_error_at_landing[env_ids].clone() # Metric for flight success
+
+                phase_at_termination = self.jump_phase[env_ids].clone() # Phase when episode ended for these env_ids
+
+                # Takeoff error is valid if the robot took off (i.e., reached FLIGHT or LANDING phase before reset)
+                valid_for_takeoff_metric_mask = (phase_at_termination == Phase.FLIGHT) | (phase_at_termination == Phase.LANDING)
+                # Flight angle error at landing is valid if the robot actually landed (i.e., reached LANDING phase before reset)
+                valid_for_flight_metric_mask = (phase_at_termination == Phase.LANDING)
+                
+                # Only proceed if there's at least one valid metric to record to avoid unnecessary computation
+                if torch.any(valid_for_takeoff_metric_mask) or torch.any(valid_for_flight_metric_mask):
+                    pitch_cmds_for_bucketing = cmds_ended_episode[:, 0]
+                    magnitude_cmds_for_bucketing = cmds_ended_episode[:, 1]
+                    
+                    pitch_bucket_indices, magnitude_bucket_indices = self._get_bucket_indices(
+                        pitch_cmds_for_bucketing, magnitude_cmds_for_bucketing
+                    )
+
+                    num_mag_buckets = self.magnitude_bucket_info["num"]
+                    # Flatten the 2D bucket indices to 1D for scatter_add_
+                    # flat_indices = pitch_idx * num_magnitude_buckets + magnitude_idx
+                    flat_indices = pitch_bucket_indices * num_mag_buckets + magnitude_bucket_indices
+
+                    # Update takeoff error metrics
+                    if torch.any(valid_for_takeoff_metric_mask):
+                        # Select only the errors from envs that are valid for this metric
+                        src_takeoff_errors = takeoff_errors_ended_episode[valid_for_takeoff_metric_mask]
+                        # Select the corresponding flat bucket indices
+                        indices_for_takeoff_update = flat_indices[valid_for_takeoff_metric_mask]
+                        
+                        # Reshape sum/count tensors to 1D for scatter_add_
+                        self.bucketed_takeoff_error_sum.view(-1).scatter_add_(
+                            0, indices_for_takeoff_update, src_takeoff_errors
+                        )
+                        self.bucketed_takeoff_error_count.view(-1).scatter_add_(
+                            0, indices_for_takeoff_update, torch.ones_like(src_takeoff_errors, dtype=torch.int64)
+                        )
+
+                    # Update flight angle error metrics
+                    if torch.any(valid_for_flight_metric_mask):
+                        # Select only the errors from envs that are valid for this metric
+                        src_flight_angle_errors = flight_angle_errors_ended_episode[valid_for_flight_metric_mask]
+                        # Select the corresponding flat bucket indices
+                        indices_for_flight_update = flat_indices[valid_for_flight_metric_mask]
+
+                        self.bucketed_flight_angle_error_sum.view(-1).scatter_add_(
+                            0, indices_for_flight_update, src_flight_angle_errors
+                        )
+                        self.bucketed_flight_angle_error_count.view(-1).scatter_add_(
+                            0, indices_for_flight_update, torch.ones_like(src_flight_angle_errors, dtype=torch.int64)
+                        )
+            # -- End Metrics Bucketing Collection --
+
             takeoff_log_data = self._takeoff_success(env_ids)
             flight_log_data = self._calculate_flight_success(env_ids)
             landing_log_data = self._calculate_landing_success(env_ids)
@@ -384,3 +535,53 @@ class FullJumpEnv(ManagerBasedRLEnv):
             self.flight_mask[env_ids] = False
             self.landing_mask[env_ids] = False
             self.takeoff_relative_error[env_ids] = 0.0
+
+    def _log_bucketed_takeoff_errors(self):
+        if self.cfg.metrics_bucketing is None or self.pitch_bucket_info is None or self.magnitude_bucket_info is None:
+            return
+
+        # Prevent division by zero, replace with NaN if count is 0
+        counts = self.bucketed_takeoff_error_count.float()
+        # Add a small epsilon to counts to avoid division by zero, then handle NaNs if sum was also 0
+        avg_errors = self.bucketed_takeoff_error_sum / (counts + 1e-8) 
+        avg_errors[counts == 0] = torch.nan # Explicitly set to NaN where counts are zero
+
+        p_info = self.pitch_bucket_info
+        m_info = self.magnitude_bucket_info
+
+        header = "Takeoff Relative Error per Command Bucket:\n"
+        header += "(Pitch Range \\ Mag Range)" # Escaped backslash for the print output
+        
+        col_headers = []
+        for j in range(m_info["num"]):
+            mag_low = m_info["min"] + j * m_info["width"]
+            mag_high = m_info["min"] + (j + 1) * m_info["width"]
+            if m_info["num"] == 1: # Special case for single magnitude bucket
+                 col_headers.append(f"Mag: [{m_info['min']:.2f}, {m_info['max']:.2f}]")
+            else:
+                 col_headers.append(f"Mag: [{mag_low:.2f}, {mag_high:.2f})")
+        header += " | " + " | ".join(col_headers)
+
+        log_str = [header]
+
+        for i in range(p_info["num"]):
+            pitch_low = p_info["min"] + i * p_info["width"]
+            pitch_high = p_info["min"] + (i + 1) * p_info["width"]
+            row_header = f"Pitch: [{pitch_low:.2f}, {pitch_high:.2f})"
+            if p_info["num"] == 1: # Special case for single pitch bucket
+                row_header = f"Pitch: [{p_info['min']:.2f}, {p_info['max']:.2f}]"
+
+            row_values = []
+            for j in range(m_info["num"]):
+                error_val = avg_errors[i, j].item()
+                count_val = self.bucketed_takeoff_error_count[i,j].item()
+                if torch.isnan(torch.tensor(error_val)):
+                    row_values.append(f"N/A ({count_val})")
+                else:
+                    row_values.append(f"{error_val:.3f} ({count_val})")
+            log_str.append(f"{row_header:<25} | " + " | ".join(f"{v:>12}" for v in row_values))
+        
+        # Add a note about (count)
+        log_str.append("\nFormat: AvgError (CountInBucket)")
+        final_log_string = "\n".join(log_str)
+        print(final_log_string)
