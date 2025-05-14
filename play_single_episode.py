@@ -17,6 +17,9 @@ import wandb
 import yaml
 
 from isaaclab.app import AppLauncher
+# Add necessary imports for loading OmegaConf and getting EnvCfg class
+from omegaconf import OmegaConf
+# import isaaclab.sim as sim_utils # Not strictly needed for the edit itself, but good for context
 
 # add argparse arguments
 parser = argparse.ArgumentParser(description="Play a checkpoint of an RL agent from RL-Games for a single episode.")
@@ -27,17 +30,7 @@ parser.add_argument(
     "--disable_fabric", action="store_true", default=False, help="Disable fabric and use USD I/O operations."
 )
 parser.add_argument("--task", type=str, default="full-jump", help="Name of the task.")
-parser.add_argument("--checkpoint", type=str, default=None, help="Path to model checkpoint.")
-parser.add_argument(
-    "--use_pretrained_checkpoint",
-    action="store_true",
-    help="Use the pre-trained checkpoint from Nucleus.",
-)
-parser.add_argument(
-    "--use_last_checkpoint",
-    action="store_true",
-    help="When no checkpoint provided, use the last saved model. Otherwise use the best saved model.",
-)
+parser.add_argument("--checkpoint", type=str, default=None, help="Path to model checkpoint (mandatory).")
 parser.add_argument("--real-time", action="store_true", default=False, help="Run in real-time, if possible.")
 parser.add_argument("--video", action="store_true", default=False, help="Record video of the episode.")
 parser.add_argument("--plot", action="store_true", default=False, help="Generate plots of episode data.")
@@ -60,6 +53,7 @@ import os
 import time
 import torch
 import matplotlib.pyplot as plt
+import matplotlib.ticker as ticker # Import ticker
 from isaaclab_rl.rl_games import RlGamesGpuEnv, RlGamesVecEnvWrapper
 from rl_games.common import env_configurations, vecenv
 from rl_games.common.player import BasePlayer
@@ -81,7 +75,7 @@ from terms.phase import Phase # Import Phase enum
 from terms.observations import has_taken_off
 
 
-def plot_episode_data(robot, clipped_actions, scaled_actions, joint_angles, joint_torques, com_lin_vel, base_height, jump_phase, feet_off_ground, dt, log_dir, cmd_filename_suffix, cmd_wandb_suffix, actual_cmd_magnitude, episode_any_feet_on_ground, episode_takeoff_toggle, episode_contact_forces, episode_rewards, episode_foot_ground_forces):
+def plot_episode_data(robot, general_contact_sensor, clipped_actions, scaled_actions, joint_angles, joint_torques, com_lin_vel, base_height, jump_phase, feet_off_ground, dt, log_dir, cmd_filename_suffix, cmd_wandb_suffix, actual_cmd_magnitude, episode_any_feet_on_ground, episode_takeoff_toggle, episode_contact_forces, episode_rewards):
     """Plots the recorded actions, joint angles, torques, target positions, COM velocity, base height, feet status, contact forces, and rewards."""
     print("[INFO] Plotting episode data...")
     plots_dir = os.path.join(log_dir, "plots") # Define plots directory path
@@ -100,11 +94,7 @@ def plot_episode_data(robot, clipped_actions, scaled_actions, joint_angles, join
     takeoff_toggle_np = torch.stack(episode_takeoff_toggle).cpu().numpy().astype(int)
     time_np = np.arange(len(actions_np)) * dt
 
-    # Convert foot ground forces
-    foot_ground_forces_np = {}
-    if episode_foot_ground_forces:
-        pass # Remove logic as episode_foot_ground_forces is removed
-    # Convert general contact forces if available
+
     contact_forces_available = bool(episode_contact_forces)
     contact_forces_np = None
     if contact_forces_available:
@@ -265,17 +255,24 @@ def plot_episode_data(robot, clipped_actions, scaled_actions, joint_angles, join
     axs_kin[2].legend()
     axs_kin[2].grid(True)
     add_all_phase_shading(axs_kin[2], time_np, jump_phase_np, add_legend_labels=False)
+    # Add more detailed time ticks
+    axs_kin[2].xaxis.set_major_locator(ticker.MultipleLocator(0.1))
+    axs_kin[2].xaxis.set_minor_locator(ticker.MultipleLocator(0.05))
+    axs_kin[2].xaxis.set_major_formatter(ticker.FormatStrFormatter('%.1f'))
+
     plt.tight_layout(rect=[0, 0.03, 1, 0.95])
     plot_path = os.path.join(plots_dir, f"base_kinematics_plot_{cmd_filename_suffix}.png")
     plt.savefig(plot_path)
     plt.close(fig_kin)
     wandb_plots[f"base_kinematics_plot_{cmd_wandb_suffix}"] = plot_path
 
-    # 3. Contact Status & Filtered Forces
+    # 3. Contact Status & Forces
     print("[INFO] Plotting Contact Status & Forces...")
-    fig_contact, axs_contact = plt.subplots(2, 1, figsize=(15, 10), sharex=True) # Changed from 3,1 to 2,1
+    # Create 5 subplots: 1 for status, 4 for force groups
+    fig_contact, axs_contact = plt.subplots(5, 1, figsize=(15, 20), sharex=True) 
     fig_contact.suptitle('Contact Status & Forces', fontsize=16)
-    # Status Signals
+    
+    # --- Plot Status Signals (Top Subplot) ---
     axs_contact[0].step(time_np, any_feet_on_ground_np, where='post', label='any_feet_on_the_ground() (General Sensor)', linewidth=1.5) # Updated label
     axs_contact[0].step(time_np, feet_off_ground_np, where='post', label='all_feet_off_the_ground() (General Sensor)', linestyle=':', linewidth=1.5) # Updated label
     axs_contact[0].step(time_np, takeoff_toggle_np, where='post', label='has_taken_off()', linestyle='--', linewidth=1.5) # From terms.observations
@@ -286,66 +283,104 @@ def plot_episode_data(robot, clipped_actions, scaled_actions, joint_angles, join
     axs_contact[0].legend(loc='center right', fontsize='small')
     axs_contact[0].grid(True)
     add_all_phase_shading(axs_contact[0], time_np, jump_phase_np, add_legend_labels=True) # Give this plot the phase legend
-    # Plotting General Contact Forces (excluding feet) in the second subplot
-    ax_gen_cf = axs_contact[1] # Use the second axis now
+    
+    # --- Plotting Contact Forces (Subplots 1 to 4) ---
     if contact_forces_available:
-        print("[INFO] Plotting General Contact Forces (Non-Foot)...")
-        # Define body groups excluding feet explicitly
-        # Trying to match indices from the general sensor based on patterns
-        body_groups_non_foot = {
+        print("[INFO] Plotting Contact Forces by Body Group...")
+        # Define all body groups, including feet
+        all_body_groups = {
+            'Feet': ["LF_FOOT", "RF_FOOT", "LH_FOOT", "RH_FOOT"],
             'Shanks': ["LF_SHANK", "RF_SHANK", "LH_SHANK", "RH_SHANK"],
             'Thighs': ["LF_THIGH", "RF_THIGH", "LH_THIGH", "RH_THIGH"],
-            'Base/Hip': ["base", "LF_HIP", "RF_HIP", "LH_HIP", "RH_HIP"] # Group base and hip
+            'Base/Hip': ["base", "LF_HIP", "RF_HIP", "LH_HIP", "RH_HIP"] 
         }
-        num_bodies = contact_forces_np.shape[1]
+        
+        try:
+            robot_body_names = robot.body_names
+            num_robot_bodies = len(robot_body_names)
+            num_force_data_bodies = contact_forces_np.shape[1]
 
-        for i, (group_name, body_names_patterns) in enumerate(body_groups_non_foot.items()):
-            ax = ax_gen_cf
-            any_plotted = False
-            lines = []
-            labels = []
-            plotted_indices = set() # Keep track of plotted indices to avoid duplicates if patterns overlap
+            if num_robot_bodies != num_force_data_bodies:
+                 print(f"[Warning] Mismatch between number of bodies in robot asset ({num_robot_bodies}) and force data ({num_force_data_bodies}). Skipping force plotting.")
+                 contact_forces_available = False
 
-            for name_pattern in body_names_patterns:
-                try:
-                    # Get indices/names matching the pattern from the *robot asset*
-                    indices_list, resolved_names = robot.find_bodies(name_pattern)
-                    if not indices_list:
-                        # print(f"[Debug] No bodies found for pattern '{name_pattern}' in group '{group_name}'.")
-                        continue
+        except AttributeError:
+             print("[Warning] Could not access 'body_names' on the robot object. Skipping force plotting.")
+             contact_forces_available = False
 
-                    # Now, we need to map these robot body indices to the indices used
-                    # by the *general contact sensor*. This requires knowing how the
-                    # general sensor was configured (which bodies it includes).
-                    # Assuming the general sensor includes *all* robot bodies,
-                    # the indices might align, but this is fragile.
-                    # A safer approach (requires env changes) is to have the sensor
-                    # provide a mapping or use SceneEntityCfg within the plot function.
-                    # For now, assume indices align with the full robot body list:
-                    for idx, resolved_name in zip(indices_list, resolved_names):
-                         # Check if this index is within the bounds of the collected force data
-                         # AND if we haven't plotted this specific index already
-                        if idx < num_bodies and idx not in plotted_indices:
-                            force_magnitude = np.linalg.norm(contact_forces_np[:, idx, :], axis=1)
-                            line, = ax.plot(time_np, force_magnitude)
-                            lines.append(line)
-                            labels.append(resolved_name)
-                            any_plotted = True
-                            plotted_indices.add(idx) # Mark this index as plotted
-                        # else: print(f"[Debug] Index {idx} for {resolved_name} out of bounds ({num_bodies}) or already plotted.")
+        if contact_forces_available: # Re-check after trying to get names
+            # Iterate through groups and plot on corresponding axes (axs_contact[1] to axs_contact[4])
+            for i, (group_name, body_names_patterns) in enumerate(all_body_groups.items()):
+                ax_group = axs_contact[i+1] # Get the correct subplot axis (index 1 onwards)
+                any_plotted_group = False
+                lines_group = []
+                labels_group = []
+                
+                for name_pattern in body_names_patterns:
+                    try:
+                        # Find bodies on the *robot* matching the pattern
+                        indices_list, resolved_robot_names = robot.find_bodies(name_pattern)
+                        if not resolved_robot_names:
+                            continue # No bodies found for this pattern on the robot
 
-                except Exception as e:
-                    print(f"[Warning] Error processing body pattern '{name_pattern}' in group '{group_name}': {e}")
+                        for robot_body_name in resolved_robot_names:
+                            # Find the index of this body name within the *robot's* body list
+                            try:
+                                robot_body_idx = robot_body_names.index(robot_body_name)
+                                # Ensure index is within bounds of actual data 
+                                if robot_body_idx < contact_forces_np.shape[1]:
+                                    force_magnitude = np.linalg.norm(contact_forces_np[:, robot_body_idx, :], axis=1)
+                                    line, = ax_group.plot(time_np, force_magnitude)
+                                    lines_group.append(line)
+                                    labels_group.append(robot_body_name) # Use the actual body name
+                                    any_plotted_group = True
+                                # else: Already checked consistency earlier
 
-            # Set titles and labels on the shared axis ax_gen_cf
-            ax_gen_cf.set_title(f"General Contact Forces (Non-Foot)")
-            ax_gen_cf.set_ylabel("Force Mag (N)")
-            if any_plotted:
-                ax_gen_cf.legend(lines, labels, fontsize='small', ncol=2 if len(labels) > 4 else 1)
-            else:
-                ax_gen_cf.text(0.5, 0.5, 'No data found/plotted', ha='center', va='center', transform=ax_gen_cf.transAxes)
-            ax_gen_cf.grid(True)
-            add_all_phase_shading(ax_gen_cf, time_np, jump_phase_np, add_legend_labels=False) # No phase legend here
+                            except ValueError:
+                                print(f"[Warning] Body '{robot_body_name}' (resolved from pattern '{name_pattern}') not found in robot.body_names list. Skipping.")
+                                pass 
+
+                    except Exception as e:
+                        print(f"[Warning] Error processing body pattern '{name_pattern}' in group '{group_name}': {e}")
+
+                # Set titles and labels for the current group subplot
+                ax_group.set_title(f"{group_name} Contact Forces")
+                ax_group.set_ylabel("Force Mag (N)")
+                if any_plotted_group:
+                    # Sort legend items alphabetically
+                    sorted_legend_items = sorted(zip(labels_group, lines_group), key=lambda item: item[0])
+                    sorted_labels = [item[0] for item in sorted_legend_items]
+                    sorted_lines = [item[1] for item in sorted_legend_items]
+                    ax_group.legend(sorted_lines, sorted_labels, fontsize='small', ncol=1, loc='upper right') # Use 1 column per group
+                else:
+                    ax_group.text(0.5, 0.5, f'No contact data for {group_name}', ha='center', va='center', transform=ax_group.transAxes)
+                ax_group.grid(True)
+                add_all_phase_shading(ax_group, time_np, jump_phase_np, add_legend_labels=False) # No phase legend on these subplots
+
+        else: # Handle case where contact_forces_available was false 
+             # Display message on all force subplots
+             for i in range(1, 5):
+                 ax = axs_contact[i]
+                 group_name = list(all_body_groups.keys())[i-1]
+                 ax.set_title(f"{group_name} Contact Forces")
+                 ax.set_ylabel("Force Mag (N)")
+                 ax.text(0.5, 0.5, 'Contact force data unavailable or empty', ha='center', va='center', transform=ax.transAxes)
+                 ax.grid(True)
+                 add_all_phase_shading(ax, time_np, jump_phase_np, add_legend_labels=False)
+
+    # Set common X label for the last subplot
+    axs_contact[-1].set_xlabel("Time (s)") 
+    # Add more detailed time ticks
+    axs_contact[-1].xaxis.set_major_locator(ticker.MultipleLocator(0.1))
+    axs_contact[-1].xaxis.set_minor_locator(ticker.MultipleLocator(0.05))
+    axs_contact[-1].xaxis.set_major_formatter(ticker.FormatStrFormatter('%.1f'))
+    
+    # Adjust layout for the entire figure
+    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+    plot_path = os.path.join(plots_dir, f"contact_forces_plot_{cmd_filename_suffix}.png") 
+    plt.savefig(plot_path)
+    plt.close(fig_contact)
+    wandb_plots[f"contact_forces_plot_{cmd_wandb_suffix}"] = plot_path
 
     # 4. Joint Torques
     print("[INFO] Plotting Joint Torques...")
@@ -375,6 +410,11 @@ def plot_episode_data(robot, clipped_actions, scaled_actions, joint_angles, join
         add_all_phase_shading(ax, time_np, jump_phase_np, add_legend_labels=(i==0)) # Phase legend on first
         ax.grid(True)
     axs_torq[-1].set_xlabel("Time (s)")
+    # Add more detailed time ticks
+    axs_torq[-1].xaxis.set_major_locator(ticker.MultipleLocator(0.1))
+    axs_torq[-1].xaxis.set_minor_locator(ticker.MultipleLocator(0.05))
+    axs_torq[-1].xaxis.set_major_formatter(ticker.FormatStrFormatter('%.1f'))
+
     plt.tight_layout(rect=[0, 0.03, 1, 0.95])
     plot_path = os.path.join(plots_dir, f"joint_torques_plot_{cmd_filename_suffix}.png")
     plt.savefig(plot_path)
@@ -407,6 +447,11 @@ def plot_episode_data(robot, clipped_actions, scaled_actions, joint_angles, join
              axs_rew[1].grid(True)
 
         axs_rew[1].set_xlabel("Time (s)")
+        # Add more detailed time ticks
+        axs_rew[1].xaxis.set_major_locator(ticker.MultipleLocator(0.1))
+        axs_rew[1].xaxis.set_minor_locator(ticker.MultipleLocator(0.05))
+        axs_rew[1].xaxis.set_major_formatter(ticker.FormatStrFormatter('%.1f'))
+
         plt.tight_layout(rect=[0, 0.03, 1, 0.95])
         plot_path = os.path.join(plots_dir, f"rewards_plot_{cmd_filename_suffix}.png")
         plt.savefig(plot_path)
@@ -443,6 +488,11 @@ def plot_episode_data(robot, clipped_actions, scaled_actions, joint_angles, join
         add_all_phase_shading(ax, time_np, jump_phase_np, add_legend_labels=(i==0)) # Phase legend on first
         ax.grid(True)
     axs_act[-1].set_xlabel("Time (s)")
+    # Add more detailed time ticks
+    axs_act[-1].xaxis.set_major_locator(ticker.MultipleLocator(0.1))
+    axs_act[-1].xaxis.set_minor_locator(ticker.MultipleLocator(0.05))
+    axs_act[-1].xaxis.set_major_formatter(ticker.FormatStrFormatter('%.1f'))
+
     plt.tight_layout(rect=[0, 0.03, 1, 0.95])
     plot_path = os.path.join(plots_dir, f"clipped_actions_plot_{cmd_filename_suffix}.png")
     plt.savefig(plot_path)
@@ -461,49 +511,122 @@ def plot_episode_data(robot, clipped_actions, scaled_actions, joint_angles, join
 
 def main():
     """Play with RL-Games agent for a single episode."""
-    # parse env configuration
-    env_cfg = parse_env_cfg(
-        args_cli.task, device=args_cli.device, num_envs=args_cli.num_envs, use_fabric=not args_cli.disable_fabric
-    )
-    
-    if args_cli.cmd_magnitude is not None and args_cli.cmd_pitch is not None:
-        # Override the command ranges to be sampled from with fixed values
-        env_cfg.command_ranges.initial_magnitude_range = (args_cli.cmd_magnitude, args_cli.cmd_magnitude)
-        env_cfg.command_ranges.initial_pitch_range = (args_cli.cmd_pitch, args_cli.cmd_pitch)
-    
-    # Determine the actual command values used (either from CLI or defaults)
-    actual_cmd_magnitude = env_cfg.command_ranges.initial_magnitude_range[0]
-    actual_cmd_pitch = env_cfg.command_ranges.initial_pitch_range[0]
-    # Simplified format for filenames/logging
-    cmd_filename_suffix = "episode" # Generic suffix
-    cmd_wandb_suffix = "" # No command info in wandb key
+    # Check if checkpoint is provided
+    if not args_cli.checkpoint:
+        print("[ERROR] --checkpoint argument is required. Please provide the path to a model checkpoint.")
+        return
 
+    # agent_cfg must be loaded first to get log_root_path if needed for checkpoint search
     agent_cfg = load_cfg_from_registry(args_cli.task, "rl_games_cfg_entry_point")
 
-    # specify directory for logging experiments
-    log_root_path = os.path.join("logs", "rl_games", agent_cfg["params"]["config"]["name"])
-    log_root_path = os.path.abspath(log_root_path)
-    print(f"[INFO] Loading experiment from directory: {log_root_path}")
-    # find checkpoint
-    if args_cli.use_pretrained_checkpoint:
-        resume_path = get_published_pretrained_checkpoint("rl_games", args_cli.task)
-        if not resume_path:
-            print("[INFO] Unfortunately a pre-trained checkpoint is currently unavailable for this task.")
-            return
-    elif args_cli.checkpoint is None:
-        # specify directory for logging runs
-        run_dir = agent_cfg["params"]["config"].get("full_experiment_name", ".*")
-        # specify name of checkpoint
-        if args_cli.use_last_checkpoint:
-            checkpoint_file = ".*"
-        else:
-            # this loads the best checkpoint
-            checkpoint_file = f"{agent_cfg['params']['config']['name']}.pth"
-        # get path to previous checkpoint
-        resume_path = get_checkpoint_path(log_root_path, run_dir, checkpoint_file, other_dirs=["nn"])
+    # specify directory for logging experiments (used as a base if checkpoint path is relative, or for fallbacks)
+    # log_root_path = os.path.join("logs", "rl_games", agent_cfg["params"]["config"]["name"])
+    # log_root_path = os.path.abspath(log_root_path)
+    # print(f"[INFO] Base log directory: {log_root_path}") # For debugging path logic
+    
+    # find checkpoint and define log_dir and env_yaml_path
+    env_yaml_path = None 
+    log_dir = None
+
+    print(f"[INFO] Attempting to load checkpoint: {args_cli.checkpoint}")
+    resume_path = retrieve_file_path(args_cli.checkpoint) 
+    
+    if not resume_path or not os.path.exists(resume_path) or not os.path.isfile(resume_path):
+        print(f"[ERROR] Checkpoint path '{args_cli.checkpoint}' (resolved to '{resume_path}') is not a valid file or does not exist. Exiting.")
+        return
+    
+    print(f"[INFO] Checkpoint found at: {resume_path}")
+    try:
+        log_dir = os.path.dirname(os.path.dirname(resume_path))
+        env_yaml_path = os.path.join(log_dir, "params", "env.yaml")
+        print(f"[INFO] Deduced log directory: {log_dir}")
+        print(f"[INFO] Expected env.yaml path: {env_yaml_path}")
+    except Exception as e:
+        print(f"[ERROR] Could not determine log_dir or env.yaml path from resume_path '{resume_path}': {e}. Exiting.")
+        return
+
+
+    # Now, load or parse env_cfg
+    if env_yaml_path and os.path.exists(env_yaml_path):
+        print(f"[INFO] Loading environment configuration from saved: {env_yaml_path}")
+        try:
+            # Try to load YAML using PyYAML with FullLoader to handle Python-specific tags
+            with open(env_yaml_path, 'r') as f:
+                # Attempt to use FullLoader if available, otherwise fallback to default loader for yaml.load
+                try:
+                    data_from_yaml = yaml.load(f, Loader=yaml.FullLoader)
+                except AttributeError: # FullLoader might not be available in older/restricted PyYAML
+                    print("[WARNING] yaml.FullLoader not available. Falling back to default yaml.load(). This may fail for Python-specific tags.")
+                    f.seek(0) # Reset file pointer before re-reading
+                    data_from_yaml = yaml.load(f, Loader=getattr(yaml, 'Loader', None)) # Use default Loader
+            
+            loaded_omega_cfg_from_yaml = OmegaConf.create(data_from_yaml)
+            
+            # First, parse the current env_cfg to get the correct class type
+            temp_env_cfg_instance = parse_env_cfg(
+                args_cli.task,
+                device="cpu",  # Placeholder, will be overridden
+                num_envs=1,    # Placeholder, will be overridden
+                use_fabric=not args_cli.disable_fabric 
+            )
+            env_cfg_cls = type(temp_env_cfg_instance)
+            
+            # Instantiate the correct class with values from the loaded YAML/OmegaConf object
+            env_cfg = env_cfg_cls(**OmegaConf.to_container(loaded_omega_cfg_from_yaml, resolve=True, throw_on_missing=True))
+
+            # Apply necessary overrides from command line arguments to the new instance
+            env_cfg.sim.device = args_cli.device
+            env_cfg.scene.num_envs = args_cli.num_envs
+            env_cfg.sim.use_fabric = not args_cli.disable_fabric
+
+        except yaml.YAMLError as e: # Catch PyYAML specific errors during loading
+            print(f"[ERROR] Failed to parse YAML from {env_yaml_path}: {e}. Falling back to current env_cfg.")
+            env_cfg = parse_env_cfg(
+                args_cli.task, device=args_cli.device, num_envs=args_cli.num_envs, use_fabric=not args_cli.disable_fabric
+            )
+        except Exception as e: # General fallback for OmegaConf errors or other issues
+            print(f"[ERROR] Failed to load, process, or instantiate EnvCfg from {env_yaml_path}: {e}. Falling back.")
+            env_cfg = parse_env_cfg(
+                args_cli.task, device=args_cli.device, num_envs=args_cli.num_envs, use_fabric=not args_cli.disable_fabric
+            )
     else:
-        resume_path = retrieve_file_path(args_cli.checkpoint)
-    log_dir = os.path.dirname(os.path.dirname(resume_path))
+        if env_yaml_path: # Warn if we expected a file but it wasn't there.
+             print(f"[WARNING] No saved env.yaml found at '{env_yaml_path}'. Using current env configuration for task '{args_cli.task}'.")
+        else: # Info if env_yaml_path was None (e.g., issues determining path)
+             print(f"[INFO] env.yaml path could not be determined. Using current environment configuration for task '{args_cli.task}'.")
+        env_cfg = parse_env_cfg(
+            args_cli.task, device=args_cli.device, num_envs=args_cli.num_envs, use_fabric=not args_cli.disable_fabric
+        )
+    
+    # Apply fixed command overrides if provided via CLI
+    if args_cli.cmd_magnitude is not None and args_cli.cmd_pitch is not None:
+        print(f"[INFO] Overriding command ranges with fixed magnitude: {args_cli.cmd_magnitude}, pitch: {args_cli.cmd_pitch}")
+        if hasattr(env_cfg, 'command_ranges') and env_cfg.command_ranges is not None:
+            env_cfg.command_ranges.initial_magnitude_range = (args_cli.cmd_magnitude, args_cli.cmd_magnitude)
+            env_cfg.command_ranges.initial_pitch_range = (args_cli.cmd_pitch, args_cli.cmd_pitch)
+            env_cfg.command_ranges.final_magnitude_range = (args_cli.cmd_magnitude, args_cli.cmd_magnitude)
+            env_cfg.command_ranges.final_pitch_range = (args_cli.cmd_pitch, args_cli.cmd_pitch)
+        else:
+            print(f"[WARNING] env_cfg for task '{args_cli.task}' does not have 'command_ranges' or it is None. Cannot apply command overrides.")
+
+    # Determine the actual command values used for this episode (either from CLI or defaults in env_cfg)
+    actual_cmd_magnitude = 0.0
+    actual_cmd_pitch = 0.0
+    if hasattr(env_cfg, 'command_ranges') and env_cfg.command_ranges is not None:
+        if env_cfg.command_ranges.initial_magnitude_range:
+            actual_cmd_magnitude = env_cfg.command_ranges.initial_magnitude_range[0]
+        if env_cfg.command_ranges.initial_pitch_range:
+            actual_cmd_pitch = env_cfg.command_ranges.initial_pitch_range[0]
+    else:
+        print(f"[WARNING] env_cfg for task '{args_cli.task}' does not have 'command_ranges' or it is None. Using 0.0 for command values.")
+
+    cmd_filename_suffix = "episode" 
+    cmd_wandb_suffix = ""
+    
+    # Ensure log_dir is defined for operations below like video/plot saving
+    # If log_dir determination failed earlier (e.g. bad resume_path), script would have exited.
+    # So, log_dir should be valid here if we reached this point.
+    # os.makedirs(log_dir, exist_ok=True) # Ensure it exists, though it should if derived from valid checkpoint
 
     # --- Clear existing plots directory ---
     plots_dir = os.path.join(log_dir, "plots")
@@ -527,7 +650,7 @@ def main():
 
     # wrap for video recording if enabled
     if args_cli.video:
-        video_folder = os.path.join(log_root_path, log_dir, "videos", "play_single")
+        video_folder = os.path.join(log_dir, "videos", "play_single")
         # Delete existing video folder to ensure a new one is created
         if os.path.exists(video_folder):
             shutil.rmtree(video_folder)
@@ -536,9 +659,9 @@ def main():
 
         video_kwargs = {
             "video_folder": video_folder,
-            "name_prefix": f"{cmd_filename_suffix}_", # Use simplified suffix
+            "name_prefix": f"{cmd_filename_suffix}_",
             "step_trigger": lambda step: step == 0,
-            "video_length": env.unwrapped.max_episode_length, # Record the whole episode
+            "video_length": int(env.unwrapped.max_episode_length),
             "disable_logger": True,
         }
         print("[INFO] Recording single episode video.")
@@ -557,7 +680,7 @@ def main():
 
     # load previously trained model
     agent_cfg["params"]["load_checkpoint"] = True
-    agent_cfg["params"]["load_path"] = resume_path
+    agent_cfg["params"]["load_path"] = resume_path # resume_path is now the validated checkpoint path
     print(f"[INFO]: Loading model checkpoint from: {agent_cfg['params']['load_path']}")
 
     # set number of actors into agent config (always 1)
@@ -570,6 +693,11 @@ def main():
     agent.restore(resume_path)
     agent.reset()
     
+    # Get references before the simulation loop and potential env.close()
+    robot = env.unwrapped.robot
+    general_contact_sensor = env.unwrapped.scene["contact_sensor"]
+    dt = env.unwrapped.physics_dt
+
     # Use lists to store data for the single episode
     episode_actions = []
     episode_joint_angles = []
@@ -583,7 +711,6 @@ def main():
     episode_any_feet_on_ground = []
     episode_contact_forces = [] # Initialize list for contact forces
     episode_rewards = [] # Initialize list for rewards
-    dt = env.unwrapped.physics_dt
 
     # reset environment
     obs = env.reset()
@@ -627,7 +754,6 @@ def main():
                 episode_any_feet_on_ground.append(any_feet.clone()) # Store any feet status
                 
                 # Read from the general contact sensor (if needed for other plots)
-                general_contact_sensor: ContactSensor = env.unwrapped.scene["contact_sensor"]
                 current_contact_forces = general_contact_sensor.data.net_forces_w.clone().squeeze(0) # Squeeze batch dim
                 episode_contact_forces.append(current_contact_forces)
                 
@@ -650,7 +776,9 @@ def main():
             if args_cli.real_time and sleep_time > 0:
                 time.sleep(sleep_time)
     finally:
-        env.close()
+        env.close() # Close the environment
+        # No need to explicitly clear refs, Python GC will handle it.
+
         if args_cli.wandb:
             with open(os.path.join(log_dir, "params/agent.yaml"), "r") as f:
                 data = yaml.safe_load(f)
@@ -667,7 +795,10 @@ def main():
 
         if args_cli.plot:
             print("[INFO] Preparing to plot data...") # Add print statement
-            plot_episode_data(robot=env.unwrapped.robot, 
+            # Get the general contact sensor object
+            # general_contact_sensor = env.unwrapped.scene["contact_sensor"]
+            plot_episode_data(robot=robot, # Use stored robot ref
+                                          general_contact_sensor=general_contact_sensor, # Use stored sensor ref
                                           clipped_actions=episode_actions, 
                                           scaled_actions=episode_target_positions,
                                           joint_angles=episode_joint_angles, 
@@ -676,7 +807,7 @@ def main():
                                           base_height=episode_base_height,
                                           jump_phase=episode_jump_phase,
                                           feet_off_ground=episode_feet_off_ground,
-                                          dt=dt, 
+                                          dt=dt, # Use stored dt 
                                           log_dir=log_dir,
                                           cmd_filename_suffix=cmd_filename_suffix,
                                           cmd_wandb_suffix=cmd_wandb_suffix,
@@ -684,7 +815,7 @@ def main():
                                           episode_any_feet_on_ground=episode_any_feet_on_ground,
                                           episode_takeoff_toggle=episode_takeoff_toggle,
                                           episode_contact_forces=episode_contact_forces,
-                                          episode_rewards=episode_rewards) # Pass None as foot forces are removed 
+                                          episode_rewards=episode_rewards) # Pass stored rewards 
 
         if args_cli.wandb:
             wandb.finish()
@@ -692,14 +823,22 @@ def main():
 def save_video_to_wandb(video_folder, log_dir, run_id, run_project, dt, cmd_wandb_suffix):
     print(f"Logging video to WandB run id: {run_id} in project: {run_project}")
     import glob
-    # Use the simplified suffix in the video name pattern if needed, or adjust glob
-    # If cmd_filename_suffix is just "episode", the pattern is "episode_*.mp4"
-    video_files = glob.glob(os.path.join(video_folder, f"{cmd_filename_suffix}_*.mp4"))
+    video_name_pattern_prefix = "episode" # Consistent with main's cmd_filename_suffix for this case
+    video_files = glob.glob(os.path.join(video_folder, f"{video_name_pattern_prefix}_*.mp4"))
     if not video_files:
-        print(f"No video files found in {video_folder}")
+        print(f"No video files found in {video_folder} matching pattern '{video_name_pattern_prefix}_*.mp4'")
         return
-    # Log with simplified key
-    wandb.log({f"single_jump_video": wandb.Video(video_files[0], fps=int(1/dt), format="mp4")})
+    
+    valid_video_files = [f for f in video_files if os.path.getsize(f) > 0]
+    if not valid_video_files:
+        print(f"No valid (non-empty) video files found in {video_folder}")
+        return
+
+    valid_video_files.sort(key=os.path.getmtime, reverse=True)
+    video_to_log = valid_video_files[0]
+    
+    wandb.log({f"single_jump_video{cmd_wandb_suffix}": wandb.Video(video_to_log, fps=int(1/dt), format="mp4")})
+    print(f"Logged video '{video_to_log}' to WandB.")
 
 if __name__ == "__main__":
     # run the main function

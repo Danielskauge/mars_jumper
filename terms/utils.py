@@ -10,6 +10,8 @@ from isaaclab.sensors import ContactSensor
 
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedEnv, ManagerBasedRLEnv
+
+
     
 def sum_contact_forces(env: ManagerBasedEnv, env_ids: Sequence[int]) -> torch.Tensor:
     """Sum the contact forces of the robot, expect feet"""
@@ -51,6 +53,22 @@ def all_feet_off_the_ground(env: ManagerBasedEnv) -> torch.Tensor:
     all_feet_off = torch.all(foot_force_magnitudes <= contact_sensor.cfg.force_threshold, dim=1) # Shape: [num_envs]
 
     return all_feet_off
+
+def any_body_high_contact_force(env: ManagerBasedEnv) -> torch.Tensor:
+    """Check if any body is in contact with the ground using the general contact sensor."""
+    robot: Articulation = env.scene[SceneEntityCfg("robot").name]
+    contact_sensor: ContactSensor = env.scene["contact_sensor"]
+    
+    # Get net forces for all bodies from the general sensor
+    net_forces = contact_sensor.data.net_forces_w_history[:, 0, :, :]
+    
+    # Calculate the magnitude of forces for each body
+    body_force_magnitudes = torch.norm(net_forces, dim=-1) # Shape: [num_envs, num_bodies]
+    
+    # Check if *any* body force magnitude is above the threshold
+    any_body_high_contact_force = torch.any(body_force_magnitudes > contact_sensor.cfg.force_threshold, dim=1) # Shape: [num_envs]
+    
+    return any_body_high_contact_force
 
 def any_feet_on_the_ground(env: ManagerBasedEnv) -> torch.Tensor:
     """Check if any feet are on the ground using the general contact sensor."""

@@ -11,12 +11,49 @@ if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
 from terms.phase import Phase
 
-def bad_takeoff(
+DEG2RAD = np.pi/180
+
+
+
+def bad_knee_angle(
+    env: ManagerBasedRLEnv) -> torch.Tensor:
+    #Terminate when knee exceeds angle limits in flexion direction aka shank passes thight of the leg
+    knee_joint_idx, _ = env.robot.find_joints(".*KFE.*")
+    knee_angle = env.robot.data.joint_pos[:, knee_joint_idx] #shape (num_envs, 4)
+    knee_angle_limit = env.robot.cfg.knee_joint_limits
+    return torch.any(knee_angle > 180*DEG2RAD, dim=-1)
+
+def bad_takeoff_at_flight(
     env: ManagerBasedRLEnv,
     relative_error_threshold: float = 0.1,
 ) -> torch.Tensor:
-    """Terminate when the robot's takeoff is too far from the desired takeoff vector."""
     return (env.takeoff_relative_error > relative_error_threshold) & (env.jump_phase == Phase.FLIGHT)
+
+def bad_takeoff_success_rate(
+    env: ManagerBasedRLEnv,
+    success_rate_threshold: float = 0.9,
+) -> torch.Tensor:
+    """Terminate at landing when the takeoff success rate is too low."""
+    return (env.running_takeoff_success_rate < success_rate_threshold) & (env.jump_phase == Phase.LANDING)
+
+def bad_flight_success_rate(
+    env: ManagerBasedRLEnv,
+    success_rate_threshold: float = 0.9,
+) -> torch.Tensor:
+    """Terminate at landing when the flight success rate is too low."""
+    return (env.running_flight_success_rate < success_rate_threshold) & (env.jump_phase == Phase.LANDING)
+
+def bad_takeoff_at_landing(
+    env: ManagerBasedRLEnv,
+    relative_error_threshold: float = 0.1,
+) -> torch.Tensor:
+    return (env.takeoff_relative_error > relative_error_threshold) & (env.jump_phase == Phase.LANDING)
+
+def bad_flight_at_landing(
+    env: ManagerBasedRLEnv,
+    angle_error_threshold: float = 10*DEG2RAD,
+) -> torch.Tensor:
+    return (env.angle_error_at_landing > angle_error_threshold) & (env.jump_phase == Phase.LANDING)
 
 def bad_orientation(
     env: ManagerBasedRLEnv,

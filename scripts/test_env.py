@@ -29,9 +29,9 @@ import matplotlib.pyplot as plt
 
 DEG2RAD = np.pi/180.0
 
-abductor_angle = 0 * DEG2RAD
-hip_angle = -70 * DEG2RAD
-knee_angle = 140 * DEG2RAD
+abductor_angle = 45 * DEG2RAD
+hip_angle = 45 * DEG2RAD
+knee_angle = 180 * DEG2RAD
 
 takeoff_knee_angle = 0 * DEG2RAD
 takeoff_hip_angle = 0 * DEG2RAD

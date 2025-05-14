@@ -37,68 +37,22 @@ class CommandRangesCfg:
     
 @configclass
 class MySceneCfg(InteractiveSceneCfg):
-    # Comment out or remove the old terrain definition
-    # terrain = TerrainImporterCfg(
-    #     prim_path="/World/ground",
-    #     terrain_type="plane",
-    #     collision_group=-1,
-    #     physics_material=sim_utils.RigidBodyMaterialCfg(
-    #         friction_combine_mode="multiply",
-    #         restitution_combine_mode="multiply",
-    #         static_friction=1.0,
-    #         dynamic_friction=1.0,
-    #         restitution=0.0,
-    #     ),
-    #     debug_vis=False,
-    # )
-
-    # Define ground using a large, flat cuboid
-    ground_plane = AssetBaseCfg(
-        prim_path="/World/ground", # Keep the same prim path
-        spawn=sim_utils.CuboidCfg(
-            size=(100.0, 100.0, 0.01), # Make it large and thin
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True), # Make it static
-            physics_material=sim_utils.RigidBodyMaterialCfg(
-                friction_combine_mode="multiply",
-                restitution_combine_mode="multiply",
-                static_friction=1.0,
-                dynamic_friction=1.0,
-                restitution=0.0
-            ),
-            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.5, 0.5, 0.5)) # Optional visual material
+    # Restore the original terrain definition
+    terrain = TerrainImporterCfg(
+        prim_path="/World/ground",
+        terrain_type="plane",
+        collision_group=-1,
+        physics_material=sim_utils.RigidBodyMaterialCfg(
+            friction_combine_mode="multiply",
+            restitution_combine_mode="multiply",
+            static_friction=1.0,
+            dynamic_friction=1.0,
+            restitution=0.0,
         ),
-        init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, -0.01)) # Position it slightly below origin
+        debug_vis=False,
     )
 
     robot: ArticulationCfg = MarsJumperRobotCfg()
-    # Remove individual foot sensors
-    # front_left_foot_ground_contact_sensor = ContactSensorCfg(
-    #     prim_path="{ENV_REGEX_NS}/robot/LF_FOOT", 
-    #     filter_prim_paths_expr=["/World/ground"],
-    #     history_length=1,
-    #     track_air_time=True, 
-    #     force_threshold=0.1
-    # )
-    # front_right_foot_ground_contact_sensor = ContactSensorCfg(
-    #     prim_path="{ENV_REGEX_NS}/robot/RF_FOOT", 
-    #     filter_prim_paths_expr=["/World/ground"],
-    #     history_length=1,
-    #     track_air_time=True, 
-    #     force_threshold=0.1
-    # )
-    # back_left_foot_ground_contact_sensor = ContactSensorCfg(
-    #     prim_path="{ENV_REGEX_NS}/robot/LH_FOOT", 
-    #     filter_prim_paths_expr=["/World/ground"],
-    #     history_length=1,
-    #     track_air_time=True, 
-    #     force_threshold=0.1
-    # )
-    # back_right_foot_ground_contact_sensor = ContactSensorCfg(
-    #     prim_path="{ENV_REGEX_NS}/robot/RH_FOOT", 
-    #     filter_prim_paths_expr=["/World/ground"],
-    #     track_air_time=True, 
-    #     force_threshold=0.1
-    # )
 
     contact_sensor = ContactSensorCfg(prim_path="{ENV_REGEX_NS}/robot/.*", force_threshold=0.1)
     
@@ -112,7 +66,19 @@ class MySceneCfg(InteractiveSceneCfg):
 
 @configclass
 class ActionsCfg:
-    joint_pos = mdp.JointPositionActionCfg(asset_name="robot", debug_vis=True, joint_names=[".*"], use_default_offset=True) 
+    #joint_pos = mdp.JointPositionActionCfg(asset_name="robot", debug_vis=True, joint_names=[".*"], use_default_offset=True) 
+    # joint_pos = mdp.JointPositionToLimitsActionCfg(
+    #     asset_name="robot", 
+    #     joint_names=[".*"], # Apply to all joints
+    #     scale=1.0, # Assuming policy output is already in a suitable range like [-1, 1] to be mapped to limits
+    #     rescale_to_limits=True, # This is the key, and it's True by default
+    #     # offset can be used if needed, but typically not if rescale_to_limits handles the full range.
+    #     # If your policy outputs delta from default_joint_pos, you might add default_joint_pos as offset
+    #     # AFTER the unscale_transform, or adjust how unscale_transform is used. 
+    #     # For now, assume policy outputs absolute targets in normalized [-1,1] space.
+    #     debug_vis=True
+    # )
+   joint_pos = mdp.JointPositionActionCfg(asset_name="robot", debug_vis=True, joint_names=[".*"], use_default_offset=True) 
     
 @configclass
 class ObservationsCfg:
@@ -151,55 +117,78 @@ class RewardsCfg:
                                    params={"target_height": 0.18, 
                                            "kernel": rewards.Kernel.INVERSE_SQUARE,
                                            "scale": 400},
-                                   weight=0.1)
+                                   weight=0.2)
+    
+    landing_base_vertical_vel = RewardTermCfg(func=rewards.landing_base_vertical_vel_l1,
+                                              weight=-0.001)
     
     attitude_error_on_way_down = RewardTermCfg(func=rewards.attitude_error_on_way_down, 
-                                              params={"scale": 11.0},
+                                              params={"scale": 5.0},
                                               weight=1)
     
     attitude_rotation_flight = RewardTermCfg(func=rewards.attitude_rotation_magnitude, 
                                       params={"kernel": "inverse_quadratic", 
-                                              "scale": 11.0,
+                                              "scale": 5.0,
                                               "phases": [Phase.FLIGHT]},
-                                      weight=0.1)
+                                      weight=0.2)
     
-    # attitude_rotation_landing = RewardTermCfg(func=rewards.attitude_rotation_magnitude, 
-    #                                   params={"kernel": "inverse_quadratic", 
-    #                                           "scale": 11.0,
-    #                                           "phases": [Phase.LANDING]},
-    #                                   weight=0.1)
+    attitude_landing = RewardTermCfg(func=rewards.attitude_rotation_magnitude, 
+                                      params={"kernel": "inverse_quadratic", 
+                                              "scale": 11.0,
+                                              "phases": [Phase.LANDING]},
+                                      weight=0.3)
     
-    landing_action_rate = RewardTermCfg(func=rewards.action_rate,
-                                        params={"kernel": rewards.Kernel.SQUARE, 
-                                                "phases": [Phase.LANDING]},
-                                        weight=-0.005)
+    # landing_foot_ground_contact = RewardTermCfg(func=rewards.landing_foot_ground_contact,
+    #                                             weight=0.1)
     
-    # is_alive_at_landing = RewardTermCfg(func=rewards.is_alive, 
-    #                                     params={"phases": [Phase.LANDING]},
-    #                                     weight=0.1)
+    landing_joint_vel = RewardTermCfg(func=rewards.joint_vel_l1,
+                                      params={"phases": [Phase.LANDING]},
+                                      weight=-0.001)
     
+    landing_abduction_zero_pos = RewardTermCfg(func=rewards.landing_abduction_zero_pos,
+                                              weight=-0.01)
+            
     is_terminated = RewardTermCfg(func=mdp.is_terminated_term, weight= -1, params={"term_keys": ["bad_orientation"]})
     
     dof_pos_limits = RewardTermCfg(func=mdp.joint_pos_limits, 
-                                   weight=-0.01)
+                                   weight=-0.1)
     
-    contact_forces = RewardTermCfg(func=rewards.contact_forces,
+    contact_forces_potential_based = RewardTermCfg(func=rewards.contact_forces_potential_based,
+                                           weight=-0.01,
+                                           params={"sensor_cfg": SceneEntityCfg(name="contact_sensor", body_names=[".*THIGH.*", ".*SHANK.*", ".*HIP.*", ".*base.*"]),
+                                                   "kernel": rewards.Kernel.LINEAR,
+                                                   "phases": [Phase.LANDING, Phase.TAKEOFF, Phase.FLIGHT],
+                                                   "potential_buffer_postfix": "landing_contact"})
+    
+    landing_contact_forces = RewardTermCfg(func=rewards.contact_forces,
                                        weight=-0.001,
-                                       params={"sensor_cfg": 
-                                           SceneEntityCfg(
-                                               name="contact_sensor", # Use the new sensor name
-                                               body_names=[".*THIGH.*", ".*SHANK.*", ".*HIP.*", ".*base.*"]),
-                                           "kernel": rewards.Kernel.LINEAR},)
+                                       params={
+                                           "kernel": rewards.Kernel.LINEAR,
+                                           "phases": [Phase.FLIGHT, Phase.TAKEOFF]})
+    
+    # foot_contact_stability = RewardTermCfg(func=rewards.foot_contact_state_change_penalty,
+    #                                          weight=-0.05, # Negative weight as the function returns a penalty
+    #                                          params={"phases": [Phase.LANDING, Phase.TAKEOFF]} # Example phases
+    #                                          )
     
 @configclass
 class TerminationsCfg:
+    bad_takeoff_at_landing = TerminationTermCfg(func=terminations.bad_takeoff_at_landing, params={"relative_error_threshold": 0.1})
+    #bad_flight_at_landing = TerminationTermCfg(func=terminations.bad_flight_at_landing, params={"angle_error_threshold": 15*DEG2RAD})
+    #bad_takeoff_success_rate = TerminationTermCfg(func=terminations.bad_takeoff_success_rate, params={"success_rate_threshold": 0.9})
+    #bad_flight_success_rate = TerminationTermCfg(func=terminations.bad_flight_success_rate, params={"success_rate_threshold": 0.9})
     #landed = TerminationTermCfg(func=terminations.landed, time_out=False)
     time_out = TerminationTermCfg(func=mdp.time_out, time_out=True)
-    #bad_takeoff = TerminationTermCfg(func=terminations.bad_takeoff, params={"relative_error_threshold": 0.1})
+    #bad_knee_angle = TerminationTermCfg(func=terminations.bad_knee_angle)
     bad_orientation = TerminationTermCfg(func=terminations.bad_orientation, params={
         "limit_angle": np.pi/2, 
-        "phases": [Phase.TAKEOFF, Phase.LANDING]
+        "phases": [Phase.TAKEOFF, Phase.FLIGHT, Phase.LANDING]
     })
+    
+    illegal_contact = TerminationTermCfg(func=mdp.terminations.illegal_contact, 
+                                         params={
+                                             "sensor_cfg": SceneEntityCfg(name="contact_sensor", body_names=[".*THIGH.*", ".*SHANK.*", ".*HIP.*", ".*base.*"]),
+                                             "threshold": 10})
     # self_collision = TerminationTermCfg(func=custom_terminations.self_collision, params={"asset_cfg": SceneEntityCfg("robot", body_names=".*"), "threshold": 1.0}) #TODO: implement
     
 @configclass
@@ -226,25 +215,12 @@ class FullJumpEnvCfg(ManagerBasedRLEnvCfg):
     is_finite_horizon: bool = True
 
     def __post_init__(self):
-        
-        # Remove the map as individual sensors are gone
-        # self.feet_ground_contact_name_map = {
-        #     "fl": "front_left_foot_ground_contact_sensor", 
-        #     "fr": "front_right_foot_ground_contact_sensor", 
-        #     "rl": "back_left_foot_ground_contact_sensor", 
-        #     "rr": "back_right_foot_ground_contact_sensor"
-        # }
-
-        #Takeoff success criteria
         self.takeoff_magnitude_ratio_error_threshold = 0.1
-        self.takeoff_angle_error_threshold = 10*DEG2RAD
+        self.takeoff_angle_error_threshold_rad = 10*DEG2RAD
         
         #Flight success criteria
         self.flight_angle_error_threshold = 15*DEG2RAD
-        
-        self.takeoff_to_flight_height_trigger = 0.15#robot max standing height is 22cm
-        self.flight_to_landing_height_trigger = 0.20 #robot might come in tiled, so we give it a bit more room
-        
+                
         self.real_time_control_dt = 1/120
         self.sim.dt = 1/360 #Physics time step, also the torque update rate
         self.episode_length_s = MAX_EPISODE_LENGTH_S
@@ -262,7 +238,6 @@ class FullJumpEnvCfg(ManagerBasedRLEnvCfg):
         self.decimation = int(self.real_time_control_dt / self.sim.dt) #Number of physics steps per env step 
  
         self.sim.render_interval = self.decimation #Number of physics steps between render frames
-        self.sim.disable_contact_processing = True
         # Use the physics material from the new ground_plane definition if needed elsewhere,
         # or define a shared material config. For now, assuming it's self-contained.
         # self.sim.physics_material = self.scene.terrain.physics_material
@@ -270,10 +245,6 @@ class FullJumpEnvCfg(ManagerBasedRLEnvCfg):
         # update sensor update periods
         # we tick all the sensors based on the smallest update period (physics update period)
         contact_sensor_period = self.decimation * self.sim.dt
-        # Remove update period settings for removed sensors
-        # self.scene.front_left_foot_ground_contact_sensor.update_period = contact_sensor_period
-        # self.scene.front_right_foot_ground_contact_sensor.update_period = contact_sensor_period
-        # self.scene.back_left_foot_ground_contact_sensor.update_period = contact_sensor_period
-        # self.scene.back_right_foot_ground_contact_sensor.update_period = contact_sensor_period
+
         self.scene.contact_sensor.update_period = contact_sensor_period
         
