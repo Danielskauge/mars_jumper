@@ -1,0 +1,895 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- This URDF was automatically created by SolidWorks to URDF Exporter! Originally created by Stephen Brawner (brawner@gmail.com) 
+     Commit Version: 1.6.0-4-g7f85cfe  Build Version: 1.6.7995.38578
+     For more information, please see http://wiki.ros.org/sw_urdf_exporter -->
+<robot
+  name="moved_motor_urdf">
+  <link
+    name="base">
+    <inertial>
+      <origin
+        xyz="-0.00053163 -0.0010715 0.0017644"
+        rpy="0 0 0" />
+      <mass
+        value="0.41157" />
+      <inertia
+        ixx="0.00013271"
+        ixy="3.1403E-06"
+        ixz="6.1681E-07"
+        iyy="0.00027086"
+        iyz="9.5823E-08"
+        izz="0.0003918" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://moved_motor_urdf/meshes/base.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.75294 0.75294 0.75294 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://moved_motor_urdf/meshes/base.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <link
+    name="RF_HIP">
+    <inertial>
+      <origin
+        xyz="0.036851 -0.0017439 8.8402E-09"
+        rpy="0 0 0" />
+      <mass
+        value="0.10058" />
+      <inertia
+        ixx="1.4082E-05"
+        ixy="9.9228E-08"
+        ixz="-4.0521E-12"
+        iyy="2.3423E-05"
+        iyz="9.1053E-12"
+        izz="3.0083E-05" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://moved_motor_urdf/meshes/RF_HIP.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.75294 0.75294 0.75294 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://moved_motor_urdf/meshes/RF_HIP.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="RF_HAA"
+    type="continuous">
+    <origin
+      xyz="0.042 -0.05443 -0.006"
+      rpy="0 0 0" />
+    <parent
+      link="base" />
+    <child
+      link="RF_HIP" />
+    <axis
+      xyz="-1 0 0" />
+  </joint>
+  <link
+    name="RF_THIGH">
+    <inertial>
+      <origin
+        xyz="0.00018833 -0.044288 -0.019096"
+        rpy="0 0 0" />
+      <mass
+        value="0.13133" />
+      <inertia
+        ixx="5.3806E-05"
+        ixy="-7.2794E-08"
+        ixz="-6.124E-07"
+        iyy="4.4114E-05"
+        iyz="1.7835E-06"
+        izz="1.9496E-05" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://moved_motor_urdf/meshes/RF_THIGH.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.75294 0.75294 0.75294 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://moved_motor_urdf/meshes/RF_THIGH.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="RF_HFE"
+    type="continuous">
+    <origin
+      xyz="0.04538 -0.0194 0"
+      rpy="0 0 0" />
+    <parent
+      link="RF_HIP" />
+    <child
+      link="RF_THIGH" />
+    <axis
+      xyz="0 -1 0" />
+  </joint>
+  <link
+    name="RF_SHANK">
+    <inertial>
+      <origin
+        xyz="0.00016506 -0.017711 -0.005935"
+        rpy="0 0 0" />
+      <mass
+        value="0.013213" />
+      <inertia
+        ixx="1.1386E-05"
+        ixy="-6.783E-08"
+        ixz="3.8156E-07"
+        iyy="1.0666E-05"
+        iyz="1.9176E-06"
+        izz="1.0767E-06" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://moved_motor_urdf/meshes/RF_SHANK.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.75294 0.75294 0.75294 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://moved_motor_urdf/meshes/RF_SHANK.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="RF_KFE"
+    type="continuous">
+    <origin
+      xyz="0 -0.00293 -0.1"
+      rpy="0 0 0" />
+    <parent
+      link="RF_THIGH" />
+    <child
+      link="RF_SHANK" />
+    <axis
+      xyz="0 -1 0" />
+  </joint>
+  <link
+    name="RF_FOOT">
+    <inertial>
+      <origin
+        xyz="0.001468 -0.0039 0.0051725"
+        rpy="0 0 0" />
+      <mass
+        value="0.0013554" />
+      <inertia
+        ixx="4.9214E-08"
+        ixy="-5.0818E-14"
+        ixz="-6.6901E-09"
+        iyy="5.4651E-08"
+        iyz="-7.0691E-14"
+        izz="2.1384E-08" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://moved_motor_urdf/meshes/RF_FOOT.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.29804 0.29804 0.29804 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://moved_motor_urdf/meshes/RF_FOOT.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="RF_shank_fixed_RF_FOOT"
+    type="fixed">
+    <origin
+      xyz="0.0013138 -0.003665 -0.10509"
+      rpy="0 0 0" />
+    <parent
+      link="RF_SHANK" />
+    <child
+      link="RF_FOOT" />
+    <axis
+      xyz="0 0 0" />
+  </joint>
+  <link
+    name="RH_HIP">
+    <inertial>
+      <origin
+        xyz="-0.0351310000337762 -0.00238527067394522 -4.3048763997966E-09"
+        rpy="0 0 0" />
+      <mass
+        value="0.103922532762722" />
+      <inertia
+        ixx="1.47431519365143E-05"
+        ixy="-3.22657696569023E-07"
+        ixz="-1.15987857371214E-11"
+        iyy="2.43035818428672E-05"
+        iyz="-8.17928816508298E-12"
+        izz="3.04862004950229E-05" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://moved_motor_urdf/meshes/RH_HIP.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://moved_motor_urdf/meshes/RH_HIP.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="RH_HAA"
+    type="continuous">
+    <origin
+      xyz="-0.042 -0.05443 -0.006"
+      rpy="0 0 0" />
+    <parent
+      link="base" />
+    <child
+      link="RH_HIP" />
+    <axis
+      xyz="-1 0 0" />
+  </joint>
+  <link
+    name="RH_THIGH">
+    <inertial>
+      <origin
+        xyz="0.00018833 -0.044288 -0.019096"
+        rpy="0 0 0" />
+      <mass
+        value="0.13133" />
+      <inertia
+        ixx="5.3806E-05"
+        ixy="-7.2794E-08"
+        ixz="-6.124E-07"
+        iyy="4.4114E-05"
+        iyz="1.7835E-06"
+        izz="1.9496E-05" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://moved_motor_urdf/meshes/RH_THIGH.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.75294 0.75294 0.75294 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://moved_motor_urdf/meshes/RH_THIGH.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="RH_HFE"
+    type="continuous">
+    <origin
+      xyz="-0.04538 -0.0194 0"
+      rpy="0 0 0" />
+    <parent
+      link="RH_HIP" />
+    <child
+      link="RH_THIGH" />
+    <axis
+      xyz="0 -1 0" />
+  </joint>
+  <link
+    name="RH_SHANK">
+    <inertial>
+      <origin
+        xyz="0.00016506 -0.017711 -0.005935"
+        rpy="0 0 0" />
+      <mass
+        value="0.013213" />
+      <inertia
+        ixx="1.1386E-05"
+        ixy="-6.783E-08"
+        ixz="3.8156E-07"
+        iyy="1.0666E-05"
+        iyz="1.9176E-06"
+        izz="1.0767E-06" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://moved_motor_urdf/meshes/RH_SHANK.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.75294 0.75294 0.75294 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://moved_motor_urdf/meshes/RH_SHANK.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="RH_KFE"
+    type="continuous">
+    <origin
+      xyz="0 -0.00293 -0.1"
+      rpy="0 0 0" />
+    <parent
+      link="RH_THIGH" />
+    <child
+      link="RH_SHANK" />
+    <axis
+      xyz="0 -1 0" />
+  </joint>
+  <link
+    name="RH_FOOT">
+    <inertial>
+      <origin
+        xyz="0.001468 -0.0039 0.0051725"
+        rpy="0 0 0" />
+      <mass
+        value="0.0013554" />
+      <inertia
+        ixx="4.9214E-08"
+        ixy="-5.0818E-14"
+        ixz="-6.6901E-09"
+        iyy="5.4651E-08"
+        iyz="-7.0691E-14"
+        izz="2.1384E-08" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://moved_motor_urdf/meshes/RH_FOOT.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.29804 0.29804 0.29804 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://moved_motor_urdf/meshes/RH_FOOT.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="RH_shank_fixed_RH_FOOT"
+    type="fixed">
+    <origin
+      xyz="0.0013137 -0.003665 -0.10509"
+      rpy="0 0 0" />
+    <parent
+      link="RH_SHANK" />
+    <child
+      link="RH_FOOT" />
+    <axis
+      xyz="0 0 0" />
+  </joint>
+  <link
+    name="LH_HIP">
+    <inertial>
+      <origin
+        xyz="-0.035131 0.0023853 4.3049E-09"
+        rpy="0 0 0" />
+      <mass
+        value="0.10392" />
+      <inertia
+        ixx="1.4743E-05"
+        ixy="3.2266E-07"
+        ixz="1.1599E-11"
+        iyy="2.4304E-05"
+        iyz="-8.1793E-12"
+        izz="3.0486E-05" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://moved_motor_urdf/meshes/LH_HIP.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.75294 0.75294 0.75294 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://moved_motor_urdf/meshes/LH_HIP.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="LH_HAA"
+    type="continuous">
+    <origin
+      xyz="-0.042 0.05443 -0.006"
+      rpy="0 0 0" />
+    <parent
+      link="base" />
+    <child
+      link="LH_HIP" />
+    <axis
+      xyz="1 0 0" />
+  </joint>
+  <link
+    name="LH_THIGH">
+    <inertial>
+      <origin
+        xyz="7.7768E-05 0.037005 -0.023214"
+        rpy="0 0 0" />
+      <mass
+        value="0.078078" />
+      <inertia
+        ixx="3.5662E-05"
+        ixy="6.4858E-08"
+        ixz="-4.6397E-07"
+        iyy="3.0658E-05"
+        iyz="-1.4732E-06"
+        izz="1.1126E-05" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://moved_motor_urdf/meshes/LH_THIGH.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.75294 0.75294 0.75294 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://moved_motor_urdf/meshes/LH_THIGH.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="LH_HFE"
+    type="continuous">
+    <origin
+      xyz="-0.04538 0.0194 0"
+      rpy="0 0 0" />
+    <parent
+      link="LH_HIP" />
+    <child
+      link="LH_THIGH" />
+    <axis
+      xyz="0 -1 0" />
+  </joint>
+  <link
+    name="LH_SHANK">
+    <inertial>
+      <origin
+        xyz="0.000145 0.018018 -0.0046626"
+        rpy="0 0 0" />
+      <mass
+        value="0.01135" />
+      <inertia
+        ixx="9.3621E-06"
+        ixy="5.5596E-08"
+        ixz="3.1276E-07"
+        iyy="8.747E-06"
+        iyz="-1.5718E-06"
+        izz="9.1145E-07" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://moved_motor_urdf/meshes/LH_SHANK.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.75294 0.75294 0.75294 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://moved_motor_urdf/meshes/LH_SHANK.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="LH_KFE"
+    type="continuous">
+    <origin
+      xyz="0 0.00293 -0.1"
+      rpy="0 0 0" />
+    <parent
+      link="LH_THIGH" />
+    <child
+      link="LH_SHANK" />
+    <axis
+      xyz="0 -1 0" />
+  </joint>
+  <link
+    name="LH_FOOT">
+    <inertial>
+      <origin
+        xyz="0.001468 0.0039 0.0051725"
+        rpy="0 0 0" />
+      <mass
+        value="0.0013554" />
+      <inertia
+        ixx="4.9214E-08"
+        ixy="-5.0818E-14"
+        ixz="-6.6901E-09"
+        iyy="5.4651E-08"
+        iyz="-7.0691E-14"
+        izz="2.1384E-08" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://moved_motor_urdf/meshes/LH_FOOT.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.29804 0.29804 0.29804 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://moved_motor_urdf/meshes/LH_FOOT.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="LH_shank_fixed_LH_FOOT"
+    type="fixed">
+    <origin
+      xyz="0.0013137 0.003665 -0.10509"
+      rpy="0 0 0" />
+    <parent
+      link="LH_SHANK" />
+    <child
+      link="LH_FOOT" />
+    <axis
+      xyz="0 0 0" />
+  </joint>
+  <link
+    name="LF_HIP">
+    <inertial>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <mass
+        value="0" />
+      <inertia
+        ixx="0"
+        ixy="0"
+        ixz="0"
+        iyy="0"
+        iyz="0"
+        izz="0" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://moved_motor_urdf/meshes/LF_HIP.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://moved_motor_urdf/meshes/LF_HIP.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="LF_HAA"
+    type="continuous">
+    <origin
+      xyz="0.042 0.05443 -0.006"
+      rpy="0 0 0" />
+    <parent
+      link="base" />
+    <child
+      link="LF_HIP" />
+    <axis
+      xyz="1 0 0" />
+  </joint>
+  <link
+    name="LF_THIGH">
+    <inertial>
+      <origin
+        xyz="7.7767805150751E-05 0.0370051512174218 -0.0232141896862411"
+        rpy="0 0 0" />
+      <mass
+        value="0.0780775429673478" />
+      <inertia
+        ixx="3.56615542005694E-05"
+        ixy="6.48579311285071E-08"
+        ixz="-4.63970613721558E-07"
+        iyy="3.06580586805275E-05"
+        iyz="-1.47319651612601E-06"
+        izz="1.11264287414828E-05" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://moved_motor_urdf/meshes/LF_THIGH.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://moved_motor_urdf/meshes/LF_THIGH.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="LF_HFE"
+    type="continuous">
+    <origin
+      xyz="0.04538 0.0194 0"
+      rpy="0 0 0" />
+    <parent
+      link="LF_HIP" />
+    <child
+      link="LF_THIGH" />
+    <axis
+      xyz="0 -1 0" />
+  </joint>
+  <link
+    name="LF_SHANK">
+    <inertial>
+      <origin
+        xyz="0.000144995944557171 0.0180176976832853 -0.00466263568469469"
+        rpy="0 0 0" />
+      <mass
+        value="0.0113501716692729" />
+      <inertia
+        ixx="9.36214017200464E-06"
+        ixy="5.55960331267651E-08"
+        ixz="3.12758264563494E-07"
+        iyy="8.74696019064692E-06"
+        iyz="-1.57177601529454E-06"
+        izz="9.11454436232396E-07" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://moved_motor_urdf/meshes/LF_SHANK.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://moved_motor_urdf/meshes/LF_SHANK.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="LF_KFE"
+    type="continuous">
+    <origin
+      xyz="0 0.00293 -0.1"
+      rpy="0 0 0" />
+    <parent
+      link="LF_THIGH" />
+    <child
+      link="LF_SHANK" />
+    <axis
+      xyz="0 -1 0" />
+  </joint>
+  <link
+    name="LF_FOOT">
+    <inertial>
+      <origin
+        xyz="0.00146797032170769 0.00390000755879008 0.00517249534000257"
+        rpy="0 0 0" />
+      <mass
+        value="0.00135544235436574" />
+      <inertia
+        ixx="4.92143108341053E-08"
+        ixy="-5.08175873422273E-14"
+        ixz="-6.69010269616132E-09"
+        iyy="5.46505206040524E-08"
+        iyz="-7.06907865800954E-14"
+        izz="2.13836835475831E-08" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://moved_motor_urdf/meshes/LF_FOOT.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.298039215686275 0.298039215686275 0.298039215686275 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://moved_motor_urdf/meshes/LF_FOOT.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="LF_shank_fixed_LF_FOOT"
+    type="fixed">
+    <origin
+      xyz="0.0013138 0.003665 -0.10509"
+      rpy="0 0 0" />
+    <parent
+      link="LF_SHANK" />
+    <child
+      link="LF_FOOT" />
+    <axis
+      xyz="0 0 0" />
+  </joint>
+</robot>
