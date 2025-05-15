@@ -1,33 +1,38 @@
 import os
+import numpy as np
 import torch
 from typing import Tuple, List
 
-from isaaclab.actuators.actuator_cfg import IdealPDActuatorCfg, ImplicitActuatorCfg, ActuatorNetLSTMCfg
+from isaaclab.actuators.actuator_cfg import ImplicitActuatorCfg, ActuatorNetLSTMCfg
 import isaaclab.sim as sim_utils
 from isaaclab.assets.articulation import ArticulationCfg
-from isaaclab.utils.assets import ISAACLAB_NUCLEUS_DIR
 from isaaclab.utils.configclass import configclass
-from .actuators import CustomServo, CustomServoCfg, ParallelElasticActuator, ParallelElasticActuatorCfg
-from isaaclab.utils.assets import ISAACLAB_NUCLEUS_DIR
 
 DEG2RAD = torch.pi / 180.0
 RPM2RADPS = 2.0 * torch.pi / 60.0
 
+# Define limits constants first
+HIP_FLEXION_LIMITS: Tuple[float, float] = (-np.pi, np.pi)
+KNEE_LIMITS: Tuple[float, float] = (0, 175*DEG2RAD)
+ABDUCTION_LIMITS: Tuple[float, float] = (-np.pi, np.pi)
+
 @configclass
 class MarsJumperRobotCfg(ArticulationCfg):
-    """Configuration of mars jumper robot using cube mars motor model."""
-    def __init__(self):
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
         
-        self.HIP_FLEXION_JOINTS_REGEX: str = ".*_HAA.*"
-        self.HIP_ABDUCTION_JOINTS_REGEX: str = ".*_HFE.*"
+        self.HIP_FLEXION_JOINTS_REGEX: str = ".*_HAA.*" # NOTE: Mismatched names in comments vs. regex - assuming regex is correct
+        self.HIP_ABDUCTION_JOINTS_REGEX: str = ".*_HFE.*" # NOTE: Mismatched names in comments vs. regex - assuming regex is correct
         self.KNEE_JOINTS_REGEX: str = ".*_KFE.*"
         self.FEET_REGEX: str = ".*FOOT.*"
         self.AVOID_CONTACT_BODIES_REGEX: List[str] = [".*base.*", ".*HIP.*", ".*THIGH.*", ".*SHANK.*"]
+        
+        # Store limits as attributes if needed elsewhere, but primarily use constants
+        self.hip_joint_limits = HIP_FLEXION_LIMITS 
+        self.knee_joint_limits = KNEE_LIMITS
+        self.abduction_joint_limits = ABDUCTION_LIMITS
 
-        self.HIP_ABDUCTION_ANGLE_LIMITS_RAD: Tuple[float, float] = (0, 90 * DEG2RAD) 
-        self.KNEE_ANGLE_LIMITS_RAD: Tuple[float, float] = (90 * DEG2RAD, -90 * DEG2RAD) 
-        self.HIP_FLEXION_ANGLE_LIMITS_RAD: Tuple[float, float] = (-90 * DEG2RAD, 90 * DEG2RAD)
-            
         self.HIP_LINK_LENGTH: float = 0.11
         self.KNEE_LINK_LENGTH: float = 0.11
         

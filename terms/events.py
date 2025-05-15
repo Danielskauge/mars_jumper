@@ -10,14 +10,15 @@ from __future__ import annotations
 import math
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Tuple
-from isaaclab.envs.mdp.events import reset_scene_to_default
+
+import numpy as np
+from isaaclab.envs.mdp.events import reset_scene_to_default, reset_joints_by_offset, reset_root_state_uniform
 from terms.phase import Phase
 import torch
+from terms.utils import convert_command_to_euclidean_vector
 
-from isaaclab.managers import SceneEntityCfg
-from isaaclab.assets import Articulation
-import logging
 from isaaclab.utils.math import sample_uniform, quat_from_euler_xyz
+import isaaclab.utils.math as math_utils
 from torch import Tensor
 from typing import Dict
 if TYPE_CHECKING:
@@ -107,162 +108,84 @@ def reset_robot_attitude_state(env: ManagerBasedRLEnv,
     # Set joint state
     env.robot.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids)
 
-def reset_robot_initial_state(env: ManagerBasedRLEnv, 
+def init_robot_in_takeoff_and_flight_phases(env: ManagerBasedRLEnv, 
                               env_ids: Sequence[int], 
-                              crouch_flight_ratio: float,
-                              crouch_hip_angle_range_rad: Tuple[float, float],
-                              flight_base_euler_angles_range_rad: Tuple[float, float],
-                              flight_flexor_angles_range_rad: Tuple[float, float],
-                              flight_abductor_angles_range_rad: Tuple[float, float]
+                              flight_phase_ratio: float,
                               ) -> None:
     
-    num_crouch_envs = int(crouch_flight_ratio * len(env_ids))
-    crouch_ids = env_ids[:num_crouch_envs]
-    flight_ids = env_ids[num_crouch_envs:]
+    num_flight_envs = int(flight_phase_ratio * len(env_ids))
+    flight_ids = env_ids[:num_flight_envs]
+    takeoff_ids = env_ids[num_flight_envs:]
     
-    reset_robot_crouch_state(env, 
-                             crouch_ids, 
-                             crouch_hip_angle_range_rad)
-    reset_robot_flight_state(env, 
-                             flight_ids, 
-                             flight_base_euler_angles_range_rad, 
-                             flight_flexor_angles_range_rad, 
-                             flight_abductor_angles_range_rad)
+    reset_scene_to_default(env, takeoff_ids) #takeoff phase
+    env.jump_phase[takeoff_ids] = Phase.TAKEOFF
     
+    init_robot_in_flight_phase(env, flight_ids)
+    env.jump_phase[flight_ids] = Phase.FLIGHT
 
-def set_phase_to_takeoff(env: ManagerBasedRLEnv, 
-                              env_ids: Sequence[int],
-                              ) -> None:
-    
-    """ Set the robot initial state to a crouch position with the specified hip angle, 
-    meaning it is ready to take off, thus starts in takeoff phase"""
-    
-    # robot: Articulation = env.scene[SceneEntityCfg("robot").name]
-    
-    # joint_pos = torch.zeros_like(robot.data.default_joint_pos[env_ids]) #Shape: (num_envs, num_joints)
-    
-    # hip_joint_idx, _ = robot.find_joints(".*HFE")
-    # knee_joint_idx, _ = robot.find_joints(".*KFE")
-    
-    # hip_flexor_angle = torch.full_like(joint_pos[:, hip_joint_idx], hip_angle_rad) #Shape: (num_envs, 4)
-    # knee_flexor_angle = -hip_flexor_angle * 2 #Shape: (num_envs, 4)
-    
-    # joint_pos[:, hip_joint_idx] = hip_flexor_angle #Shape: (num_envs, 4)
-    # joint_pos[:, knee_joint_idx] = knee_flexor_angle 
-    
-    
-    # joint_vel = torch.zeros_like(robot.data.default_joint_vel[env_ids]) #Shape: (num_envs, num_joints)
-    
-    env._phase_buffer[env_ids] = Phase.TAKEOFF
-    # robot.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids)
-    
-def reset_robot_crouch_state(env: ManagerBasedRLEnv, 
+def init_robot_in_flight_phase(env: ManagerBasedRLEnv, 
                              env_ids: Sequence[int],
-                             hip_angle_range_rad: Tuple[float, float],
                              ) -> None:
+    """Initializes the robot state at a random point along its commanded ballistic trajectory."""
+    num_envs_to_reset = len(env_ids)
+    device = env.device
+
+    cmd_vel_polar = env.command[env_ids] # Shape: (num_envs, 2) -> [pitch, magnitude]
+    cmd_vel_cartesian = convert_command_to_euclidean_vector(cmd_vel_polar) # Shape: (num_envs, 2)
     
+    x_dot_0 = cmd_vel_cartesian[:, 0] # Shape: (num_envs)
+    z_dot_0 = cmd_vel_cartesian[:, 2] # Shape: (num_envs)
+
+    assert torch.all(z_dot_0 > 0), f"Commanded initial vertical velocity z_dot_0 must be positive: {z_dot_0}"
     
-    joint_pos = env.robot.data.default_joint_pos[env_ids].clone()
-    joint_vel = env.robot.data.default_joint_vel[env_ids].clone()
+    g = env.cfg.sim.gravity[2] # Negative value
+    z_start = math_utils.sample_uniform(0.1, 0.15, (num_envs_to_reset,), device=device) # Initial height at liftoff
+    x_start = math_utils.sample_uniform(0.0,0.5, (num_envs_to_reset,), device=device)
     
-    hip_joint_idx, _ = env.robot.find_joints(".*HFE")
-    knee_joint_idx, _ = env.robot.find_joints(".*KFE")
+    min_z_ascending = 0.20 
+    min_z_descending = 0.30
+
+    delta_z = z_start - min_z_ascending
+    discriminant = z_dot_0**2 - 4 * (0.5 * g) * delta_z # b^2 - 4ac
+    discriminant = torch.clamp(discriminant, min=1e-6) # Ensure positive for sqrt
+    assert torch.all(discriminant > 0), f"Commanded velocity z_dot_0 {z_dot_0} from z_start {z_start} insufficient to reach min_sampling_z {min_z_ascending}. Discriminant: {discriminant}"
+    t_sample_start = (-z_dot_0 + torch.sqrt(discriminant)) / g # Smaller positive root (g is negative)
+
+    delta_z = z_start - min_z_descending
+    discriminant = z_dot_0**2 - 4 * (0.5 * g) * delta_z # b^2 - 4ac
+    discriminant = torch.clamp(discriminant, min=1e-6) # Ensure positive for sqrt
+    assert torch.all(discriminant > 0), f"Commanded velocity z_dot_0 {z_dot_0} from z_start {z_start} insufficient to reach max_sampling_z {min_z_descending}. Discriminant: {discriminant}"
+    t_sample_end = (-z_dot_0 - torch.sqrt(discriminant)) / g # Larger positive root (g is negative)
+
+    assert t_sample_start > 0, f"Time range is invalid. t_start: {t_sample_start}, t_end: {t_sample_end}"
+    assert t_sample_end > 0, f"Time range is invalid. t_start: {t_sample_start}, t_end: {t_sample_end}"
+    assert t_sample_end > t_sample_start, f"Time range is invalid. t_start: {t_sample_start}, t_end: {t_sample_end}"
     
-    hip_flexor_angle = torch.empty(len(env_ids), device=env.device).uniform_(*hip_angle_range_rad) #Shape: (num_envs)
-    knee_flexor_angle = -hip_flexor_angle * 2
+    sample_time = math_utils.sample_uniform(t_sample_start, t_sample_end, (num_envs_to_reset,), device=device) # Shape: (num_envs)
+
+    x_sample = x_start + x_dot_0 * sample_time 
+    z_sample = z_start + z_dot_0 * sample_time + 0.5 * g * sample_time**2 
     
-    joint_pos[:, hip_joint_idx] = hip_flexor_angle.unsqueeze(-1) #Shape: (num_envs, 1)
-    joint_pos[:, knee_joint_idx] = knee_flexor_angle.unsqueeze(-1) 
+    x_dot_sample = x_dot_0 # Horizontal velocity remains constant
+    z_dot_sample = z_dot_0 + g * sample_time # Vertical velocity changes due to gravity
+    assert torch.all(z_sample > 0)
     
-    env.robot.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids)
+    pose_range = {"x": (x_start, x_start), 
+                  "z": (z_start, z_start),
+                  "roll": (np.deg2rad(-10), np.deg2rad(10)),
+                  "pitch": (np.deg2rad(-45), np.deg2rad(20)),
+                  "yaw": (np.deg2rad(-10), np.deg2rad(10))}
     
-    hip_link_len = env.robot.cfg.HIP_LINK_LENGTH
-    knee_link_len = env.robot.cfg.KNEE_LINK_LENGTH
+    velocity_range = {"x": (x_dot_0, x_dot_0), 
+                      "z": (z_dot_0, z_dot_0),
+                      "roll": (np.deg2rad(-10), np.deg2rad(10)),
+                      "pitch": (np.deg2rad(-20), np.deg2rad(20)),
+                      "yaw": (np.deg2rad(-10), np.deg2rad(10))}
+
     
-    root_z: torch.Tensor = hip_link_len * torch.cos(hip_flexor_angle) + \
-            knee_link_len * torch.cos(knee_flexor_angle + hip_flexor_angle) + 0.01
-             
-    root_state = env.robot.data.default_root_state[env_ids].clone()
-    
-    root_state[:, :3] = env.scene.env_origins[env_ids]
-    
-    root_state[:, 2] = root_z
-    
-    env.robot.write_root_state_to_sim(root_state, env_ids=env_ids)
-    env._phase_buffer[env_ids] = Phase.CROUCH
-    #print("Reset Event: Reset to crouch state of envs %s", env_ids)
-    
-    
-def reset_robot_flight_state(env: ManagerBasedRLEnv, 
-                             env_ids: Sequence[int],
-                             base_euler_angles_range_rad: Tuple[float, float],
-                             flexor_angles_range_rad: Tuple[float, float],
-                             abductor_angles_range_rad: Tuple[float, float]
-                             ) -> None:
-    takeoff_vel_vec = env._command_buffer[env_ids]
-    
-    #print("In reset_robot_flight_state: takeoff_vel_vec: %s", takeoff_vel_vec)
-    
-    x_dot_0 = takeoff_vel_vec[:, 1] * torch.sin(takeoff_vel_vec[:, 0]).squeeze(-1) #Shape: (num_envs)
-    z_dot_0 = takeoff_vel_vec[:, 1] * torch.cos(takeoff_vel_vec[:, 0]).squeeze(-1) #Shape: (num_envs)
-    
-    assert torch.all(x_dot_0 >= 0), f"x_dot_0 is negative: {x_dot_0}"
-    assert torch.all(z_dot_0 > 0), f"z_dot_0 is not positive: {z_dot_0}"
-    
-    z_dot_dot = env.cfg.mars_gravity
-    
-    t_top = -z_dot_0/z_dot_dot
-    
-    z_top = z_dot_0 * t_top + 0.5 * z_dot_dot * t_top**2
-    z_min = 0.15 #lowest height for sampling
-    
-    assert torch.all(z_top > z_min), "Maximum height is less than the minimum sampling height, takeoff velocity is too low for the robot to sufficiently take off"
-    
-    
-    z_min_time_1 = (-z_dot_0 - torch.sqrt(z_dot_0**2 + 2*z_dot_dot*z_min))/z_dot_dot #TODO: think through
-    z_min_time_2 = (-z_dot_0 + torch.sqrt(z_dot_0**2 + 2*z_dot_dot*z_min))/z_dot_dot
-    
-    assert torch.all(z_min_time_1 > 0), "z_min_time_1 is not positive"
-    assert torch.all(z_min_time_2 > 0), "z_min_time_2 is not positive"
-    
-    sample_time = math_utils.sample_uniform(z_min_time_1, z_min_time_2, (len(env_ids)), device=env.device) #Shape: (num_envs)
-    
-    x_sample = x_dot_0 * sample_time
-    z_sample = z_dot_0 * sample_time + 0.5 * z_dot_dot * sample_time**2
-    
-    x_dot_sample = x_dot_0
-    z_dot_sample = z_dot_0 + z_dot_dot * sample_time
-    
-    root_state = env.robot.data.default_root_state[env_ids].clone()
-    root_state[:, 0] = x_sample
-    root_state[:, 2] = z_sample
-    root_state[:, 7] = x_dot_sample
-    root_state[:, 9] = z_dot_sample
-    
-    #Base rotation quat
-    euler_angles_sample = torch.empty(len(env_ids), 3, device=env.device).uniform_(*base_euler_angles_range_rad)
-    
-    quat_sample = math_utils.quat_from_euler_xyz(euler_angles_sample[:, 0], euler_angles_sample[:, 1], euler_angles_sample[:, 2])
-    root_state[:, 3:7] = quat_sample
-    env.robot.write_root_state_to_sim(root_state, env_ids=env_ids)
-    
-    #Joint angles
-    joint_pos = env.robot.data.default_joint_pos[env_ids].clone()
-    joint_vel = env.robot.data.default_joint_vel[env_ids].clone()
-    
-    hip_joints_idx, _ = env.robot.find_joints(".*HFE")
-    knee_joints_idx, _ = env.robot.find_joints(".*KFE")
-    abductor_joints_idx, _ = env.robot.find_joints(".*HAA")
-    
-    joint_pos[:, hip_joints_idx] = torch.empty((len(env_ids), 1), device=env.device).uniform_(*flexor_angles_range_rad) #Broadcast shape (num_envs, 1) to (num_envs, 4)
-    joint_pos[:, knee_joints_idx] = torch.empty((len(env_ids), 1), device=env.device).uniform_(*flexor_angles_range_rad)
-    joint_pos[:, abductor_joints_idx] = torch.empty((len(env_ids), 1), device=env.device).uniform_(*abductor_angles_range_rad)
-    
-    env.robot.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids)
-    env._phase_buffer[env_ids] = Phase.FLIGHT
-    
-    #print("Reset Event: Reset to flight state of envs %s", env_ids)
-    
+    reset_root_state_uniform(env, env_ids, pose_range=pose_range, velocity_range=velocity_range)
+    reset_joints_by_offset(env, env_ids, position_range=(np.deg2rad(-20), np.deg2rad(20)), velocity_range=(np.deg2rad(-10), np.deg2rad(10)))    
+
 
 def set_joint_limits_from_config(env: ManagerBasedRLEnv, env_ids: Sequence[int]) -> None:
     """Sets the joint position limits based on values defined in the robot's config."""
@@ -303,3 +226,41 @@ def set_joint_limits_from_config(env: ManagerBasedRLEnv, env_ids: Sequence[int])
     # Using warn_limit_violation=False as this happens at startup before resets typically
     env.robot.write_joint_limits_to_sim(current_limits, warn_limit_violation=False)
     logger.info("Successfully set joint limits from robot configuration.")
+
+
+def reset_robot_crouch_state(env: ManagerBasedRLEnv, 
+                             env_ids: Sequence[int],
+                             hip_angle_range_rad: Tuple[float, float],
+                             ) -> None:
+    
+    
+    joint_pos = env.robot.data.default_joint_pos[env_ids].clone()
+    joint_vel = env.robot.data.default_joint_vel[env_ids].clone()
+    
+    hip_joint_idx, _ = env.robot.find_joints(".*HFE")
+    knee_joint_idx, _ = env.robot.find_joints(".*KFE")
+    
+    hip_flexor_angle = torch.empty(len(env_ids), device=env.device).uniform_(*hip_angle_range_rad) #Shape: (num_envs)
+    knee_flexor_angle = -hip_flexor_angle * 2
+    
+    joint_pos[:, hip_joint_idx] = hip_flexor_angle.unsqueeze(-1) #Shape: (num_envs, 1)
+    joint_pos[:, knee_joint_idx] = knee_flexor_angle.unsqueeze(-1) 
+    
+    env.robot.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids)
+    
+    hip_link_len = env.robot.cfg.HIP_LINK_LENGTH
+    knee_link_len = env.robot.cfg.KNEE_LINK_LENGTH
+    
+    root_z: torch.Tensor = hip_link_len * torch.cos(hip_flexor_angle) + \
+            knee_link_len * torch.cos(knee_flexor_angle + hip_flexor_angle) + 0.01
+             
+    root_state = env.robot.data.default_root_state[env_ids].clone()
+    
+    root_state[:, :3] = env.scene.env_origins[env_ids]
+    
+    root_state[:, 2] = root_z
+    
+    env.robot.write_root_state_to_sim(root_state, env_ids=env_ids)
+    env._phase_buffer[env_ids] = Phase.CROUCH
+    #print("Reset Event: Reset to crouch state of envs %s", env_ids)
+    

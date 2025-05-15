@@ -4,8 +4,8 @@ from isaaclab.envs import ManagerBasedRLEnv, VecEnvStepReturn, VecEnvObs
 from collections.abc import Sequence
 import torch
 from isaaclab.managers.scene_entity_cfg import SceneEntityCfg
-from terms.phase import Phase
-from terms.utils import update_jump_phase, sample_command, convert_command_to_euclidean_vector, log_phase_info, get_center_of_mass_lin_vel
+from terms.phase import Phase, update_jump_phase, log_phase_info
+from terms.utils import sample_command, convert_command_to_euclidean_vector, get_center_of_mass_lin_vel
 import logging
 import numpy as np
 

@@ -90,8 +90,8 @@ class RewardsCfg:
                                       params={"kernel": "inverse_quadratic", "scale": 11.0}, 
                                       weight=1)
     
-    root_ang_vel_l1 = RewardTermCfg(func=custom_rewards.ang_vel_l1, 
-                                    weight=-0.0) #-0.001
+    # root_ang_vel_l1 = RewardTermCfg(func=custom_rewards.ang_vel_l1, 
+    #                                 weight=-0.0) #-0.001
     #change_joint_direction = RewardTermCfg(func=custom_rewards.change_joint_direction_penalty, weight=-0.01)
     joint_vel_l2 = RewardTermCfg(func=mdp.joint_vel_l2,
                                  params={"asset_cfg": SceneEntityCfg("robot", body_names=".*")},

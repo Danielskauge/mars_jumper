@@ -36,7 +36,7 @@ parser.add_argument("--sigma", type=str, default=None, help="The policy's initia
 parser.add_argument("--max_iterations", type=int, default=None, help="RL Policy training iterations.")
 parser.add_argument("--wandb", action="store_true", default=False, help="Whether to use wandb for logging.")
 parser.add_argument("--run", type=str, default=None, help="Name of the run.")
-parser.add_argument("--project", type=str, default=None, help="Name of the project.")
+parser.add_argument("--project", type=str, default="testing", help="Name of the project.")
 # Add new agent config arguments
 parser.add_argument("--horizon_length", type=int, default=None, help="Horizon length for PPO.")
 parser.add_argument("--num_minibatches", type=int, default=None, help="Number of minibatches for PPO.")

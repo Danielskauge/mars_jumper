@@ -1,29 +1,59 @@
-# Copyright (c) 2022-2025, The Isaac Lab Project Developers.
-# All rights reserved.
-#
-# SPDX-License-Identifier: BSD-3-Clause
-
-"""Common functions that can be used to activate certain terminations.
-
-The functions can be passed to the :class:`isaaclab.managers.TerminationTermCfg` object to enable
-the termination introduced by the function.
-"""
 
 from __future__ import annotations
-
 import numpy as np
 import torch
 from typing import TYPE_CHECKING
-
 from isaaclab.assets import RigidObject
 from isaaclab.assets.articulation.articulation import Articulation
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.sensors import ContactSensor
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
-    from envs.takeoff_env import MarsJumperEnv
-    from envs.attitude_env import AttitudeEnv
 from terms.phase import Phase
+
+DEG2RAD = np.pi/180
+
+
+
+def bad_knee_angle(
+    env: ManagerBasedRLEnv) -> torch.Tensor:
+    #Terminate when knee exceeds angle limits in flexion direction aka shank passes thight of the leg
+    knee_joint_idx, _ = env.robot.find_joints(".*KFE.*")
+    knee_angle = env.robot.data.joint_pos[:, knee_joint_idx] #shape (num_envs, 4)
+    knee_angle_limit = env.robot.cfg.knee_joint_limits
+    return torch.any(knee_angle > 180*DEG2RAD, dim=-1)
+
+def bad_takeoff_at_flight(
+    env: ManagerBasedRLEnv,
+    relative_error_threshold: float = 0.1,
+) -> torch.Tensor:
+    return (env.takeoff_relative_error > relative_error_threshold) & (env.jump_phase == Phase.FLIGHT)
+
+def bad_takeoff_success_rate(
+    env: ManagerBasedRLEnv,
+    success_rate_threshold: float = 0.9,
+) -> torch.Tensor:
+    """Terminate at landing when the takeoff success rate is too low."""
+    return (env.running_takeoff_success_rate < success_rate_threshold) & (env.jump_phase == Phase.LANDING)
+
+def bad_flight_success_rate(
+    env: ManagerBasedRLEnv,
+    success_rate_threshold: float = 0.9,
+) -> torch.Tensor:
+    """Terminate at landing when the flight success rate is too low."""
+    return (env.running_flight_success_rate < success_rate_threshold) & (env.jump_phase == Phase.LANDING)
+
+def bad_takeoff_at_landing(
+    env: ManagerBasedRLEnv,
+    relative_error_threshold: float = 0.1,
+) -> torch.Tensor:
+    return (env.takeoff_relative_error > relative_error_threshold) & (env.jump_phase == Phase.LANDING)
+
+def bad_flight_at_landing(
+    env: ManagerBasedRLEnv,
+    angle_error_threshold: float = 10*DEG2RAD,
+) -> torch.Tensor:
+    return (env.angle_error_at_landing > angle_error_threshold) & (env.jump_phase == Phase.LANDING)
 
 def bad_orientation(
     env: ManagerBasedRLEnv,
