@@ -71,3 +71,6 @@ python play.py --checkpoint <path_to_checkpoint> [other_arguments...]
 
 ## License
 MIT
+
+## USD
+The URDF in the USD folder is not standalone functional. It must be put with the meshes in the CAD repo to work. It is there because it is the only part of the URDF that needs to be edited, and it is therefore convenient to have it in this repo. 

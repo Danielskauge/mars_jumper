@@ -31,7 +31,7 @@
       <material
         name="">
         <color
-          rgba="0.75294 0.75294 0.75294 1" />
+          rgba="0.9411764705882353 0.8549019607843137 0.6313725490196078 1.0" />
       </material>
     </visual>
     <collision>
@@ -71,7 +71,7 @@
       <material
         name="">
         <color
-          rgba="0.75294 0.75294 0.75294 1" />
+          rgba="1.0 0.0 0.0 1.0" />
       </material>
     </visual>
     <collision>
@@ -86,7 +86,7 @@
   </link>
   <joint
     name="RF_HAA"
-    type="continuous">
+    type="revolute">
     <origin
       xyz="0.042 -0.05443 -0.006"
       rpy="0 0 0" />
@@ -96,6 +96,11 @@
       link="RF_HIP" />
     <axis
       xyz="-1 0 0" />
+    <limit
+      effort="1000"
+      velocity="1000"
+      lower="-1.5707963267948966"
+      upper="1.5707963267948966" />
   </joint>
   <link
     name="RF_THIGH">
@@ -124,7 +129,7 @@
       <material
         name="">
         <color
-          rgba="0.75294 0.75294 0.75294 1" />
+          rgba="0.8196078431372549 0.8352941176470589 0.9215686274509803 1.0" />
       </material>
     </visual>
     <collision>
@@ -139,7 +144,7 @@
   </link>
   <joint
     name="RF_HFE"
-    type="continuous">
+    type="revolute">
     <origin
       xyz="0.04538 -0.0194 0"
       rpy="0 0 0" />
@@ -149,6 +154,11 @@
       link="RF_THIGH" />
     <axis
       xyz="0 -1 0" />
+    <limit
+      effort="1000"
+      velocity="1000"
+      lower="-3.141592"
+      upper="0.0" />
   </joint>
   <link
     name="RF_SHANK">
@@ -177,7 +187,7 @@
       <material
         name="">
         <color
-          rgba="0.75294 0.75294 0.75294 1" />
+          rgba="0.19607843137254902 0.5568627450980392 0.9803921568627451 1.0" />
       </material>
     </visual>
     <collision>
@@ -192,7 +202,7 @@
   </link>
   <joint
     name="RF_KFE"
-    type="continuous">
+    type="revolute">
     <origin
       xyz="0 -0.00293 -0.1"
       rpy="0 0 0" />
@@ -202,6 +212,11 @@
       link="RF_SHANK" />
     <axis
       xyz="0 -1 0" />
+    <limit
+      effort="1000"
+      velocity="1000"
+      lower="0.3490658503988659"
+      upper="2.9670597283903604" />
   </joint>
   <link
     name="RF_FOOT">
@@ -230,7 +245,7 @@
       <material
         name="">
         <color
-          rgba="0.29804 0.29804 0.29804 1" />
+          rgba="0.0 0.0 0.0 1.0" />
       </material>
     </visual>
     <collision>
@@ -283,7 +298,7 @@
       <material
         name="">
         <color
-          rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+          rgba="1.0 0.0 0.0 1.0" />
       </material>
     </visual>
     <collision>
@@ -298,7 +313,7 @@
   </link>
   <joint
     name="RH_HAA"
-    type="continuous">
+    type="revolute">
     <origin
       xyz="-0.042 -0.05443 -0.006"
       rpy="0 0 0" />
@@ -308,6 +323,11 @@
       link="RH_HIP" />
     <axis
       xyz="-1 0 0" />
+    <limit
+      effort="1000"
+      velocity="1000"
+      lower="-1.5707963267948966"
+      upper="1.5707963267948966" />
   </joint>
   <link
     name="RH_THIGH">
@@ -336,7 +356,7 @@
       <material
         name="">
         <color
-          rgba="0.75294 0.75294 0.75294 1" />
+          rgba="0.8196078431372549 0.8352941176470589 0.9215686274509803 1.0" />
       </material>
     </visual>
     <collision>
@@ -351,7 +371,7 @@
   </link>
   <joint
     name="RH_HFE"
-    type="continuous">
+    type="revolute">
     <origin
       xyz="-0.04538 -0.0194 0"
       rpy="0 0 0" />
@@ -361,6 +381,11 @@
       link="RH_THIGH" />
     <axis
       xyz="0 -1 0" />
+    <limit
+      effort="1000"
+      velocity="1000"
+      lower="-3.141592"
+      upper="0.0" />
   </joint>
   <link
     name="RH_SHANK">
@@ -389,7 +414,7 @@
       <material
         name="">
         <color
-          rgba="0.75294 0.75294 0.75294 1" />
+          rgba="0.19607843137254902 0.5568627450980392 0.9803921568627451 1.0" />
       </material>
     </visual>
     <collision>
@@ -404,7 +429,7 @@
   </link>
   <joint
     name="RH_KFE"
-    type="continuous">
+    type="revolute">
     <origin
       xyz="0 -0.00293 -0.1"
       rpy="0 0 0" />
@@ -414,6 +439,11 @@
       link="RH_SHANK" />
     <axis
       xyz="0 -1 0" />
+    <limit
+      effort="1000"
+      velocity="1000"
+      lower="0.3490658503988659"
+      upper="2.9670597283903604" />
   </joint>
   <link
     name="RH_FOOT">
@@ -442,7 +472,7 @@
       <material
         name="">
         <color
-          rgba="0.29804 0.29804 0.29804 1" />
+          rgba="0.0 0.0 0.0 1.0" />
       </material>
     </visual>
     <collision>
@@ -495,7 +525,7 @@
       <material
         name="">
         <color
-          rgba="0.75294 0.75294 0.75294 1" />
+          rgba="1.0 0.0 0.0 1.0" />
       </material>
     </visual>
     <collision>
@@ -510,7 +540,7 @@
   </link>
   <joint
     name="LH_HAA"
-    type="continuous">
+    type="revolute">
     <origin
       xyz="-0.042 0.05443 -0.006"
       rpy="0 0 0" />
@@ -520,6 +550,11 @@
       link="LH_HIP" />
     <axis
       xyz="1 0 0" />
+    <limit
+      effort="1000"
+      velocity="1000"
+      lower="-1.5707963267948966"
+      upper="1.5707963267948966" />
   </joint>
   <link
     name="LH_THIGH">
@@ -548,7 +583,7 @@
       <material
         name="">
         <color
-          rgba="0.75294 0.75294 0.75294 1" />
+          rgba="0.8196078431372549 0.8352941176470589 0.9215686274509803 1.0" />
       </material>
     </visual>
     <collision>
@@ -563,7 +598,7 @@
   </link>
   <joint
     name="LH_HFE"
-    type="continuous">
+    type="revolute">
     <origin
       xyz="-0.04538 0.0194 0"
       rpy="0 0 0" />
@@ -573,6 +608,11 @@
       link="LH_THIGH" />
     <axis
       xyz="0 -1 0" />
+    <limit
+      effort="1000"
+      velocity="1000"
+      lower="-3.141592"
+      upper="0.0" />
   </joint>
   <link
     name="LH_SHANK">
@@ -601,7 +641,7 @@
       <material
         name="">
         <color
-          rgba="0.75294 0.75294 0.75294 1" />
+          rgba="0.19607843137254902 0.5568627450980392 0.9803921568627451 1.0" />
       </material>
     </visual>
     <collision>
@@ -616,7 +656,7 @@
   </link>
   <joint
     name="LH_KFE"
-    type="continuous">
+    type="revolute">
     <origin
       xyz="0 0.00293 -0.1"
       rpy="0 0 0" />
@@ -626,6 +666,11 @@
       link="LH_SHANK" />
     <axis
       xyz="0 -1 0" />
+    <limit
+      effort="1000"
+      velocity="1000"
+      lower="0.3490658503988659"
+      upper="2.9670597283903604" />
   </joint>
   <link
     name="LH_FOOT">
@@ -654,7 +699,7 @@
       <material
         name="">
         <color
-          rgba="0.29804 0.29804 0.29804 1" />
+          rgba="0.0 0.0 0.0 1.0" />
       </material>
     </visual>
     <collision>
@@ -707,7 +752,7 @@
       <material
         name="">
         <color
-          rgba="1 1 1 1" />
+          rgba="1.0 0.0 0.0 1.0" />
       </material>
     </visual>
     <collision>
@@ -722,7 +767,7 @@
   </link>
   <joint
     name="LF_HAA"
-    type="continuous">
+    type="revolute">
     <origin
       xyz="0.042 0.05443 -0.006"
       rpy="0 0 0" />
@@ -732,6 +777,11 @@
       link="LF_HIP" />
     <axis
       xyz="1 0 0" />
+    <limit
+      effort="1000"
+      velocity="1000"
+      lower="-1.5707963267948966"
+      upper="1.5707963267948966" />
   </joint>
   <link
     name="LF_THIGH">
@@ -760,7 +810,7 @@
       <material
         name="">
         <color
-          rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+          rgba="0.8196078431372549 0.8352941176470589 0.9215686274509803 1.0" />
       </material>
     </visual>
     <collision>
@@ -775,7 +825,7 @@
   </link>
   <joint
     name="LF_HFE"
-    type="continuous">
+    type="revolute">
     <origin
       xyz="0.04538 0.0194 0"
       rpy="0 0 0" />
@@ -785,6 +835,11 @@
       link="LF_THIGH" />
     <axis
       xyz="0 -1 0" />
+    <limit
+      effort="1000"
+      velocity="1000"
+      lower="-3.141592"
+      upper="0.0" />
   </joint>
   <link
     name="LF_SHANK">
@@ -813,7 +868,7 @@
       <material
         name="">
         <color
-          rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+          rgba="0.19607843137254902 0.5568627450980392 0.9803921568627451 1.0" />
       </material>
     </visual>
     <collision>
@@ -828,7 +883,7 @@
   </link>
   <joint
     name="LF_KFE"
-    type="continuous">
+    type="revolute">
     <origin
       xyz="0 0.00293 -0.1"
       rpy="0 0 0" />
@@ -838,6 +893,11 @@
       link="LF_SHANK" />
     <axis
       xyz="0 -1 0" />
+    <limit
+      effort="1000"
+      velocity="1000"
+      lower="0.3490658503988659"
+      upper="2.9670597283903604" />
   </joint>
   <link
     name="LF_FOOT">
@@ -866,7 +926,7 @@
       <material
         name="">
         <color
-          rgba="0.298039215686275 0.298039215686275 0.298039215686275 1" />
+          rgba="0.0 0.0 0.0 1.0" />
       </material>
     </visual>
     <collision>
