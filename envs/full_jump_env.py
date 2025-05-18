@@ -21,7 +21,7 @@ class FullJumpEnv(ManagerBasedRLEnv):
         
         self.robot: Articulation = self.scene[SceneEntityCfg("robot").name]
         self.contact_sensor: ContactSensor = self.scene["contact_sensor"]
-        
+                
         self.feet_body_idx = torch.tensor(self.robot.find_bodies(".*FOOT.*")[0])
         self.hips_body_idx = torch.tensor(self.robot.find_bodies(".*HIP.*")[0])
         self.thighs_body_idx = torch.tensor(self.robot.find_bodies(".*THIGH.*")[0])
@@ -133,6 +133,7 @@ class FullJumpEnv(ManagerBasedRLEnv):
         self.command = torch.zeros(self.num_envs, 2, device=self.device)
         self.cmd_pitch_range = cfg.command_ranges.pitch_range
         self.cmd_magnitude_range = cfg.command_ranges.magnitude_range
+        self.mean_episode_env_steps = 0
 
         # Store references to foot sensors (optional but can be convenient)
         self.body_contact_sensor: ContactSensor = self.scene["contact_sensor"]
@@ -310,18 +311,26 @@ class FullJumpEnv(ManagerBasedRLEnv):
             }
             
     def _calculate_landing_success(self, env_ids: Sequence[int]) -> dict | None:
-        num_timed_out_envs = torch.sum(self.termination_manager.get_term("time_out")[env_ids]).item()
-        num_landing_envs = torch.sum(self.jump_phase[env_ids] == Phase.LANDING).item()
-        self.landing_success[env_ids] = self.termination_manager.get_term("time_out")[env_ids]
+        # Get environments that are in landing phase
+        landing_mask = self.jump_phase[env_ids] == Phase.LANDING
+        landing_env_ids = env_ids[landing_mask]
+        
+        # Get environments that timed out while in landing phase
+        timed_out_mask = self.termination_manager.get_term("time_out")[landing_env_ids]
+        num_successful_landings = torch.sum(timed_out_mask).item()
+        num_landing_envs = len(landing_env_ids)
+        
+        # Update success tracking
+        self.landing_success[landing_env_ids] = timed_out_mask
         
         if num_landing_envs > 0:
-            current_batch_landing_success_rate = num_timed_out_envs / num_landing_envs
-            self.landing_success_rate = current_batch_landing_success_rate # Update attribute
+            current_batch_landing_success_rate = num_successful_landings / num_landing_envs
+            self.landing_success_rate = current_batch_landing_success_rate
             return {
                 "landing_success_rate": self.landing_success_rate,
             }
         else:
-            self.landing_success_rate = 0.0 # Update attribute
+            self.landing_success_rate = 0.0
             return {
                 "landing_success_rate": 0.0,
             }
@@ -338,7 +347,8 @@ class FullJumpEnv(ManagerBasedRLEnv):
         obs_buf, reward_buf, terminated_buf, truncated_buf, extras = super().step(action)
         update_jump_phase(self)
         log_phase_info(self, extras)
-        
+        self._log_bucketed_takeoff_errors()
+
         if torch.any(self.takeoff_mask):
             current_vel_vec = get_center_of_mass_lin_vel(self) # Shape: (num_envs, 3)
             current_vel_magnitude = torch.norm(current_vel_vec, dim=-1) # Shape: (num_envs,)
@@ -368,22 +378,12 @@ class FullJumpEnv(ManagerBasedRLEnv):
             self.extras["log"]["flight_angle_error"] = 0.0
 
         if self.cfg.curriculum is not None:
-            self.env_steps_since_last_curriculum_update += 1
+            self.steps_since_curriculum_update += 1
 
         # Update previous foot contact state for the next step
         if hasattr(self, 'prev_feet_contact_state'): # Check if initialized
             self.prev_feet_contact_state = self._get_current_feet_contact_state().clone()
-        
-        # --- Periodic Bucketed Metrics Logging ---
-        if self.cfg.metrics_bucketing is not None and \
-           self.cfg.print_bucket_metrics_interval > 0 and \
-           self.pitch_bucket_info is not None: # Check if bucketing is active
-            self.env_steps_since_last_bucket_print += 1 # Increment by 1 for each step() call
-            if self.env_steps_since_last_bucket_print >= self.cfg.print_bucket_metrics_interval:
-                self._log_bucketed_takeoff_errors()
-                self.env_steps_since_last_bucket_print = 0 # Reset the counter
-        # --- End Periodic Bucketed Metrics Logging ---
-        
+                
         return obs_buf, reward_buf, terminated_buf, truncated_buf, extras
     
     def _get_current_feet_contact_state(self) -> torch.Tensor:
@@ -443,6 +443,11 @@ class FullJumpEnv(ManagerBasedRLEnv):
                     pitch_bucket_indices, magnitude_bucket_indices = self._get_bucket_indices(
                         pitch_cmds_for_bucketing, magnitude_cmds_for_bucketing
                     )
+                    
+                    alpha = len(env_ids) / self.num_envs
+                    mean_episode_env_steps = torch.mean(self.episode_length_buf[env_ids])
+
+                    self.mean_episode_env_steps = self.mean_episode_env_steps * (1 - alpha) + alpha * mean_episode_env_steps
 
                     num_mag_buckets = self.magnitude_bucket_info["num"]
                     # Flatten the 2D bucket indices to 1D for scatter_add_
@@ -549,39 +554,36 @@ class FullJumpEnv(ManagerBasedRLEnv):
         p_info = self.pitch_bucket_info
         m_info = self.magnitude_bucket_info
 
-        header = "Takeoff Relative Error per Command Bucket:\n"
-        header += "(Pitch Range \\ Mag Range)" # Escaped backslash for the print output
-        
-        col_headers = []
-        for j in range(m_info["num"]):
-            mag_low = m_info["min"] + j * m_info["width"]
-            mag_high = m_info["min"] + (j + 1) * m_info["width"]
-            if m_info["num"] == 1: # Special case for single magnitude bucket
-                 col_headers.append(f"Mag: [{m_info['min']:.2f}, {m_info['max']:.2f}]")
-            else:
-                 col_headers.append(f"Mag: [{mag_low:.2f}, {mag_high:.2f})")
-        header += " | " + " | ".join(col_headers)
-
-        log_str = [header]
+        # Clear previous bucketed logs to avoid stale data if some buckets are not hit in an interval
+        # This is a simple way, alternatively, one could collect all keys and remove them.
+        # For now, let's assume we overwrite or add new ones.
+        # A more robust solution might involve clearing keys with a specific prefix.
+        # For wandb, it's often fine to just log the new values; it will create new data points.
 
         for i in range(p_info["num"]):
             pitch_low = p_info["min"] + i * p_info["width"]
             pitch_high = p_info["min"] + (i + 1) * p_info["width"]
-            row_header = f"Pitch: [{pitch_low:.2f}, {pitch_high:.2f})"
+            pitch_range_str = f"pitch_{pitch_low:.2f}-{pitch_high:.2f}"
             if p_info["num"] == 1: # Special case for single pitch bucket
-                row_header = f"Pitch: [{p_info['min']:.2f}, {p_info['max']:.2f}]"
+                pitch_range_str = f"pitch_{p_info['min']:.2f}-{p_info['max']:.2f}"
 
-            row_values = []
             for j in range(m_info["num"]):
+                mag_low = m_info["min"] + j * m_info["width"]
+                mag_high = m_info["min"] + (j + 1) * m_info["width"]
+                mag_range_str = f"mag_{mag_low:.2f}-{mag_high:.2f}"
+                if m_info["num"] == 1: # Special case for single magnitude bucket
+                    mag_range_str = f"mag_{m_info['min']:.2f}-{m_info['max']:.2f}"
+
                 error_val = avg_errors[i, j].item()
                 count_val = self.bucketed_takeoff_error_count[i,j].item()
+
+                base_key = f"bucketed_takeoff/{pitch_range_str}_{mag_range_str}"
+                
                 if torch.isnan(torch.tensor(error_val)):
-                    row_values.append(f"N/A ({count_val})")
+                    # wandb might not handle NaN well depending on configuration,
+                    # logging as 0 or skipping might be alternatives.
+                    # For now, let's log it as a very distinct number or skip.
+                    # Using a very high number to indicate N/A if direct NaN logging is problematic.
+                    self.extras["log"][f"{base_key}_avg_error"] = -1.0 # Or float('nan') if wandb handles it
                 else:
-                    row_values.append(f"{error_val:.3f} ({count_val})")
-            log_str.append(f"{row_header:<25} | " + " | ".join(f"{v:>12}" for v in row_values))
-        
-        # Add a note about (count)
-        log_str.append("\nFormat: AvgError (CountInBucket)")
-        final_log_string = "\n".join(log_str)
-        print(final_log_string)
+                    self.extras["log"][f"{base_key}_avg_error"] = error_val

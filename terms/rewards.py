@@ -31,10 +31,51 @@ class Kernel(IntEnum):
     EXPONENTIAL = 2
     LINEAR = 3
     SQUARE = 4
+    SHIFTED_SQUARE = 5
 
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
     from envs.takeoff_env import MarsJumperEnv
+    
+def shifted_huber_kernel(e, scale, delta, e_max):
+    """
+    delta is the error threshold at which huber loss goes from quadratic to linear
+    e_max is the maximum error allowed
+    scale is a scaling factor for the error, higher means higher max reward and slope
+    """
+    e_hat   = e * scale
+    use_quadratic_term = torch.abs(e_hat) <= delta
+    linear_term = torch.abs(e_hat) - delta/2
+    quadratic_term = 0.5 * e_hat**2 / delta
+    huber = torch.where(use_quadratic_term, quadratic_term, linear_term)
+    
+    c_shift =  0.5*(e_max*scale)**2/delta if e_max*scale <= delta else abs(e_max*scale) - delta/2
+    return c_shift - huber
+
+def relative_cmd_error_huber(env: ManagerBasedRLEnv, scale: float, e_max: float, delta: float) -> torch.Tensor:
+    """
+    Compute the relative command error using a huber kernel
+    scale is a scaling factor for the error, higher means higher max reward and slope
+    e_max is the maximum error allowed
+    delta is the error threshold at which huber loss goes from quadratic to linear
+    """
+    takeoff_envs = env.jump_phase == Phase.TAKEOFF
+    if not torch.any(takeoff_envs):
+        return torch.zeros(env.num_envs, device=env.device)
+    
+    cmd = env.command
+    cmd_vec = convert_command_to_euclidean_vector(cmd)
+    robot_vel_vec = get_center_of_mass_lin_vel(env)
+    reward_tensor = torch.zeros(env.num_envs, device=env.device)
+    relative_error = torch.norm(robot_vel_vec - cmd_vec, dim=-1) / torch.norm(cmd_vec, dim=-1)
+    reward_tensor[takeoff_envs] = shifted_huber_kernel(e=relative_error, scale=scale, e_max=e_max, delta=delta)[takeoff_envs]
+
+    # Check vertical velocity (assuming index 2 is vertical)
+    vertical_velocity = robot_vel_vec[:, 2]
+    downward_mask = vertical_velocity < 0
+
+    reward_tensor[downward_mask] = 0    
+    return reward_tensor
     
 def landing_base_vertical_vel_l1(env: ManagerBasedRLEnv) -> torch.Tensor:
     reward_tensor = torch.zeros(env.num_envs, device=env.device)
@@ -266,14 +307,14 @@ def cmd_error(env: ManagerBasedRLEnv, kernel: Kernel, scale: float) -> torch.Ten
     cmd_vec = convert_command_to_euclidean_vector(cmd)
     robot_vel_vec = get_center_of_mass_lin_vel(env)[takeoff_envs]
     reward_tensor = torch.zeros(env.num_envs, device=env.device)
-    relative_error = torch.norm(robot_vel_vec - cmd_vec, dim=-1) / torch.norm(cmd_vec, dim=-1)
-    takeoff_rewards = torch.zeros_like(relative_error)
+    absolute_error = torch.norm(robot_vel_vec - cmd_vec, dim=-1)
+    takeoff_rewards = torch.zeros_like(absolute_error)
     if kernel == Kernel.EXPONENTIAL:
-        takeoff_rewards = torch.exp(-scale*relative_error)
+        takeoff_rewards = torch.exp(-scale*absolute_error)
     elif kernel == Kernel.INVERSE_LINEAR:
-        takeoff_rewards = 1/(1 + scale*relative_error)
+        takeoff_rewards = 1/(1 + scale*absolute_error)
     elif kernel == Kernel.INVERSE_SQUARE:
-        takeoff_rewards = 1/(1 + scale*relative_error**2)
+        takeoff_rewards = 1/(1 + scale*absolute_error**2)
 
     # Check vertical velocity (assuming index 2 is vertical)
     vertical_velocity = robot_vel_vec[:, 2]
@@ -287,7 +328,7 @@ def cmd_error(env: ManagerBasedRLEnv, kernel: Kernel, scale: float) -> torch.Ten
     
     return reward_tensor
 
-def relative_cmd_error(env: ManagerBasedRLEnv, kernel: Kernel, scale: float) -> torch.Tensor:
+def relative_cmd_error(env: ManagerBasedRLEnv, kernel: Kernel, scale: float, bias: float = 0.0) -> torch.Tensor:
     """Computes reward based on relative error between robot's velocity and commanded takeoff vector.
     
     Similar to cmd_error() but normalizes error by command magnitude to be scale-invariant.
@@ -296,10 +337,11 @@ def relative_cmd_error(env: ManagerBasedRLEnv, kernel: Kernel, scale: float) -> 
     Args:
         env: Environment instance
         scale: Scaling factor for error. Higher values create sharper reward gradients.
+        bias: Bias term for shifted square kernel.
         kernel: Error mapping function. Options:
             - "exponential": exp(-scale * relative_error) 
             - "inverse_linear": 1/(1 + scale * relative_error)
-            
+            - "shifted_square": bias - relative_error**2
     Returns:
         Reward tensor of shape (num_envs,)
     """
@@ -319,6 +361,8 @@ def relative_cmd_error(env: ManagerBasedRLEnv, kernel: Kernel, scale: float) -> 
         takeoff_rewards = 1/(1 + scale*relative_error)
     elif kernel == Kernel.INVERSE_SQUARE:
         takeoff_rewards = 1/(1 + scale*relative_error**2)
+    elif kernel == Kernel.SHIFTED_SQUARE:
+        takeoff_rewards = bias - relative_error**2
 
     # Check vertical velocity (assuming index 2 is vertical)
     vertical_velocity = robot_vel_vec[:, 2]
@@ -329,6 +373,58 @@ def relative_cmd_error(env: ManagerBasedRLEnv, kernel: Kernel, scale: float) -> 
 
     # Assign the computed rewards back to the correct indices
     reward_tensor[takeoff_envs] = takeoff_rewards
+    
+    return reward_tensor
+
+def liftoff_relative_cmd_error(env: ManagerBasedRLEnv, kernel: Kernel, scale: float, bias: float = 0.0) -> torch.Tensor:
+    """Computes reward based on relative error between robot's velocity and commanded takeoff vector, ONLY at the moment of liftoff.
+    
+    Similar to relative_cmd_error() but only active at the transition from TAKEOFF to FLIGHT.
+    Returns values in [0,1] where 1 means perfect tracking, for appropriate kernels.
+    
+    Args:
+        env: Environment instance
+        scale: Scaling factor for error. Higher values create sharper reward gradients.
+        bias: Bias term for shifted square kernel.
+        kernel: Error mapping function. Options:
+            - "exponential": exp(-scale * relative_error) 
+            - "inverse_linear": 1/(1 + scale * relative_error)
+            - "shifted_square": bias - relative_error**2
+    Returns:
+        Reward tensor of shape (num_envs,)
+    """
+    # Identify environments that transitioned from TAKEOFF to FLIGHT in this step
+    transitioned_to_flight = (env.prev_jump_phase == Phase.TAKEOFF) & (env.jump_phase == Phase.FLIGHT)
+    
+    reward_tensor = torch.zeros(env.num_envs, device=env.device)
+
+    if not torch.any(transitioned_to_flight):
+        return reward_tensor # Return zeros if no envs transitioned
+    
+    cmd = env.command[transitioned_to_flight]
+    cmd_vec = convert_command_to_euclidean_vector(cmd)
+    robot_vel_vec = get_center_of_mass_lin_vel(env)[transitioned_to_flight]
+    
+    cmd_norm = torch.norm(cmd_vec, dim=-1)
+    # Avoid division by zero if command magnitude can be zero.
+    # For takeoff commands, magnitude should generally be positive.
+    safe_cmd_norm = torch.where(cmd_norm < 1e-6, torch.ones_like(cmd_norm), cmd_norm)
+    
+    relative_error = torch.norm(robot_vel_vec - cmd_vec, dim=-1) / safe_cmd_norm
+    
+    liftoff_rewards = torch.zeros_like(relative_error) # Ensure this is same shape as relative_error
+
+    if kernel == Kernel.EXPONENTIAL:
+        liftoff_rewards = torch.exp(-scale * relative_error)
+    elif kernel == Kernel.INVERSE_LINEAR:
+        liftoff_rewards = 1 / (1 + scale * relative_error)
+    elif kernel == Kernel.INVERSE_SQUARE:
+        liftoff_rewards = 1 / (1 + scale * relative_error**2)
+    
+    vertical_velocity = robot_vel_vec[:, 2] # Z-component of velocity
+    downward_mask = vertical_velocity < 0.01 # Allow for small numerical noise, ideally > 0
+    liftoff_rewards[downward_mask] = 0.0
+    reward_tensor[transitioned_to_flight] = liftoff_rewards
     
     return reward_tensor
 
@@ -472,49 +568,6 @@ def feet_ground_contact(env: ManagerBasedRLEnv) -> torch.Tensor:
     reward_tensor = sum_feet_in_contact
     
     return reward_tensor
-
-#TODO: needs to be fixed
-# def equal_force_distribution(env: ManagerBasedRLEnv) -> torch.Tensor:
-#     """Reward equal force distribution across the feet during takeoff and landing phases.
-    
-#     This function calculates how evenly the contact forces are distributed across all feet
-#     that are in contact with the ground. The reward is higher when forces are more evenly
-#     distributed, which encourages balanced takeoffs and landings.
-    
-#     The reward is calculated as:
-#     r = 1 - (std_dev / mean)
-    
-#     where std_dev is the standard deviation of forces across feet in contact,
-#     and mean is the average force. This coefficient of variation approach rewards
-#     when forces are more uniform (lower std_dev relative to mean).
-#     """
-#     takeoff_envs = env.jump_phase == Phase.TAKEOFF
-#     landing_envs = env.jump_phase == Phase.LANDING
-#     active_envs = takeoff_envs | landing_envs
-    
-#     if not torch.any(active_envs):
-#         return torch.zeros(env.num_envs, device=env.device)
-    
-#     contact_sensor: ContactSensor = env.scene[SceneEntityCfg("contact_forces").name]
-#     robot: Articulation = env.scene[SceneEntityCfg("robot").name]
-#     feet_idx, _ = robot.find_bodies(".*FOOT.*")
-    
-#     # Get forces for all feet
-#     feet_forces = contact_sensor.data.net_forces_w[:, feet_idx]
-#     force_magnitudes = torch.norm(feet_forces, dim=-1)
-        
-#     reward_tensor = torch.zeros(env.num_envs, device=env.device)
-    
-#     std_dev = torch.std(force_magnitudes, dim=-1)
-#     mean_force = torch.mean(force_magnitudes, dim=-1)
-    
-#     if mean_force > 0.001:
-#         reward_tensor[active_envs] = -std_dev / mean_force 
-#     else:
-#         reward_tensor[active_envs] = 0
-    
-#     return reward_tensor
-    
     
 def landing_com_accel(env: ManagerBasedRLEnv) -> torch.Tensor:
     """ Reward the robot for landing with low base acceleration.
@@ -651,30 +704,40 @@ def crouch_abductor_angle(env: ManagerBasedRLEnv, target_angle_rad: float, rewar
     
     return reward_tensor
         
-def get_cartesian_cmd_vel_vec(cmd_vel_vec: torch.Tensor) -> torch.Tensor:
-    """ _Convert the takeoff velocity vector command to cartesian coordinates 
-    pitch is positive clockwise form positive z axis
-    """
-    pitch, magnitude = cmd_vel_vec.unbind(-1)
-    x_dot = magnitude * torch.sin(pitch)
-    z_dot = magnitude * torch.cos(pitch)
-    y_dot = torch.zeros_like(x_dot)
-    return torch.stack([x_dot, y_dot, z_dot], dim=-1)
-    
-def takeoff_vel_vec_angle(env: ManagerBasedRLEnv) -> torch.Tensor:
-    """ Difference between the commanded and actual takeoff velocity vector angle measured by cosine similarity
-    
-    Args:
-        env: The environment instance.
-    """
-    takeoff_envs = env.jump_phase == Phase.TAKEOFF
-    cmd_vel_vec = env.command[takeoff_envs]
-    cmd_vel_vec_cartesian = get_cartesian_cmd_vel_vec(cmd_vel_vec)
-    
-    actual_vel_vec_cartesian = env.robot.data.body_com_state_w[takeoff_envs, 6:9]
-    
-    similarity = torch.nn.functional.cosine_similarity(cmd_vel_vec_cartesian, actual_vel_vec_cartesian)
-    return (1 + similarity) / 2 #bound similarity to 0-1
+def takeoff_angle_error(env: ManagerBasedRLEnv, scale: float | int = 1.0) -> torch.Tensor:
+    """ Difference between the commanded and actual takeoff velocity vector angle measured by cosine similarity """
+    num_envs = env.num_envs
+    reward = torch.zeros(num_envs, device=env.device)
+    takeoff_mask = env.jump_phase == Phase.TAKEOFF
+    if not torch.any(takeoff_mask):
+        return reward
+
+    # Extract commanded and actual velocities for takeoff envs
+    cmd = env.command[takeoff_mask]                            # [M,2]
+    cmd_vec = convert_command_to_euclidean_vector(cmd)         # [M,3]
+    act_vec = get_center_of_mass_lin_vel(env)[takeoff_mask]    # [M,3]
+
+    # Compute norms
+    cmd_norm = cmd_vec.norm(dim=1)     # [M]
+    act_norm = act_vec.norm(dim=1)     # [M]
+
+    # Mask for sufficient velocity magnitude
+    valid = act_norm >= 0.5 * cmd_norm  # [M]
+
+    # Normalize vectors (avoid division by zero)
+    cmd_unit = cmd_vec / cmd_norm.clamp(min=1e-6).unsqueeze(1)  # [M,3]
+    act_unit = act_vec / act_norm.clamp(min=1e-6).unsqueeze(1)  # [M,3]
+
+    # Compute angle error
+    dot = (cmd_unit * act_unit).sum(dim=1).clamp(-1.0, 1.0)      # [M]
+    angle_err = torch.acos(dot)                                # [M]
+
+    # Exponential scaling and apply validity mask
+    scaled_err = torch.exp(-scale * angle_err) * valid.to(torch.float32)  # [M]
+
+    # Assign back to the global reward tensor
+    reward[takeoff_mask] = scaled_err
+    return reward
 
 def upward_velocity(env: ManagerBasedRLEnv, shape: str = "linear") -> torch.Tensor:
     """Reward upward velocity of the base, but only during the takeoff phase."""

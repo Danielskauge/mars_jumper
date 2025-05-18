@@ -36,26 +36,26 @@ class MarsJumperRobotCfg(ArticulationCfg):
         self.HIP_LINK_LENGTH: float = 0.11
         self.KNEE_LINK_LENGTH: float = 0.11
         
-        abductor_angle = 0 * DEG2RAD
-        hip_angle = -70 * DEG2RAD
-        knee_angle = 140 * DEG2RAD
-        init_height = 0.08
+        self.abductor_angle = 0 * DEG2RAD
+        self.hip_angle = -120 * DEG2RAD
+        self.knee_angle = 140 * DEG2RAD
+        self.init_height = 0.06 #was 0.08 at -70 and 140
 
         init_state = ArticulationCfg.InitialStateCfg(
-            pos=(0.0, 0.0, init_height),
+            pos=(0.0, 0.0, self.init_height),
             joint_pos={ #TODO: Check if these are correct
-            "LF_HAA": abductor_angle, 
-            "LH_HAA": abductor_angle, #postive angle is negative
-            "RF_HAA": abductor_angle, #postive angle is negative
-            "RH_HAA": abductor_angle,
-            "LF_HFE": hip_angle,
-            "LH_HFE": hip_angle,
-            "RF_HFE": hip_angle, #postive angle is negative
-            "RH_HFE": hip_angle,
-            "LF_KFE": knee_angle,
-            "LH_KFE": knee_angle,
-            "RF_KFE": knee_angle,
-            "RH_KFE": knee_angle,
+            "LF_HAA": self.abductor_angle, 
+            "LH_HAA": self.abductor_angle, #postive angle is negative
+            "RF_HAA": self.abductor_angle, #postive angle is negative
+            "RH_HAA": self.abductor_angle,
+            "LF_HFE": self.hip_angle,
+            "LH_HFE": self.hip_angle,
+            "RF_HFE": self.hip_angle, #postive angle is negative
+            "RH_HFE": self.hip_angle,
+            "LF_KFE": self.knee_angle,
+            "LH_KFE": self.knee_angle,
+            "RF_KFE": self.knee_angle,
+            "RH_KFE": self.knee_angle,
         },
         )
         
@@ -75,7 +75,7 @@ class MarsJumperRobotCfg(ArticulationCfg):
         }
     
         spawn=sim_utils.UsdFileCfg(
-                usd_path=f"{os.getcwd()}/USD_files/moved_motor_usd/moved_motor_usd.usd",
+                usd_path=f"{os.getcwd()}/USD_files/moved_motor_usd_limits/moved_motor_usd_limits.usd",
                 activate_contact_sensors=True,
                 rigid_props=sim_utils.RigidBodyPropertiesCfg(
                     disable_gravity=False,
@@ -91,6 +91,7 @@ class MarsJumperRobotCfg(ArticulationCfg):
         
         super().__init__(
             prim_path="/World/envs/env_.*/robot",
+            #prim_path="/World/robot",
             spawn=spawn,
             init_state=init_state,
             actuators=actuators,

@@ -75,7 +75,27 @@ from terms.phase import Phase # Import Phase enum
 from terms.observations import has_taken_off
 
 
-def plot_episode_data(robot, general_contact_sensor, clipped_actions, scaled_actions, joint_angles, joint_torques, com_lin_vel, base_height, jump_phase, feet_off_ground, dt, log_dir, cmd_filename_suffix, cmd_wandb_suffix, actual_cmd_magnitude, episode_any_feet_on_ground, episode_takeoff_toggle, episode_contact_forces, episode_rewards):
+def plot_episode_data(robot, 
+                      general_contact_sensor, 
+                      clipped_actions, 
+                      scaled_actions, 
+                      joint_angles, 
+                      joint_torques, 
+                      com_lin_vel,
+                      base_height, 
+                      jump_phase, 
+                      feet_off_ground, 
+                      dt, 
+                      log_dir, 
+                      cmd_filename_suffix, 
+                      cmd_wandb_suffix, 
+                      actual_cmd_magnitude, 
+                      actual_cmd_pitch,
+                      episode_any_feet_on_ground, 
+                      episode_takeoff_toggle, 
+                      episode_contact_forces, 
+                      episode_rewards,
+                      episode_all_body_heights):
     """Plots the recorded actions, joint angles, torques, target positions, COM velocity, base height, feet status, contact forces, and rewards."""
     print("[INFO] Plotting episode data...")
     plots_dir = os.path.join(log_dir, "plots") # Define plots directory path
@@ -93,6 +113,7 @@ def plot_episode_data(robot, general_contact_sensor, clipped_actions, scaled_act
     any_feet_on_ground_np = torch.stack(episode_any_feet_on_ground).cpu().numpy().astype(int) # Boolean status based on filtered ground contact
     takeoff_toggle_np = torch.stack(episode_takeoff_toggle).cpu().numpy().astype(int)
     time_np = np.arange(len(actions_np)) * dt
+    all_body_heights_np = torch.stack(episode_all_body_heights).cpu().numpy() # ADDED: Convert all body heights to numpy
 
 
     contact_forces_available = bool(episode_contact_forces)
@@ -227,7 +248,7 @@ def plot_episode_data(robot, general_contact_sensor, clipped_actions, scaled_act
 
     # 2. Base Kinematics (Height, COM Vel Components, COM Vel Mag)
     print("[INFO] Plotting Base Kinematics...")
-    fig_kin, axs_kin = plt.subplots(3, 1, figsize=(15, 12), sharex=True)
+    fig_kin, axs_kin = plt.subplots(5, 1, figsize=(15, 20), sharex=True) # Changed from 4 to 5 subplots, adjusted figsize
     fig_kin.suptitle('Base Kinematics', fontsize=16)
     # Height
     axs_kin[0].plot(time_np, base_height_np, label="Base Height")
@@ -250,15 +271,56 @@ def plot_episode_data(robot, general_contact_sensor, clipped_actions, scaled_act
     axs_kin[2].plot(time_np, com_lin_vel_mag, label="COM Velocity Magnitude")
     axs_kin[2].axhline(y=actual_cmd_magnitude, color='r', linestyle='--', label=f"Command Mag ({actual_cmd_magnitude:.2f})")
     axs_kin[2].set_title("COM Linear Velocity Magnitude")
-    axs_kin[2].set_xlabel("Time (s)")
     axs_kin[2].set_ylabel("Velocity (m/s)")
     axs_kin[2].legend()
     axs_kin[2].grid(True)
     add_all_phase_shading(axs_kin[2], time_np, jump_phase_np, add_legend_labels=False)
-    # Add more detailed time ticks
-    axs_kin[2].xaxis.set_major_locator(ticker.MultipleLocator(0.1))
-    axs_kin[2].xaxis.set_minor_locator(ticker.MultipleLocator(0.05))
-    axs_kin[2].xaxis.set_major_formatter(ticker.FormatStrFormatter('%.1f'))
+    # COM Vel Angle (XZ-plane for Pitch)
+    com_vel_pitch_rad = np.arctan2(com_lin_vel_np[:, 0], com_lin_vel_np[:, 2]) # X-component (index 0), Z-component (index 2). Angle from +Z, positive towards +X.
+    com_vel_pitch_deg = np.degrees(com_vel_pitch_rad)
+    axs_kin[3].plot(time_np, com_vel_pitch_deg, label="COM Velocity Pitch Angle (XZ-plane)")
+    # Add command pitch line if available and meaningful
+    actual_cmd_pitch_deg = math.degrees(actual_cmd_pitch) # actual_cmd_pitch is in radians
+    axs_kin[3].axhline(y=actual_cmd_pitch_deg, color='g', linestyle='--', label=f"Command Pitch ({actual_cmd_pitch_deg:.1f}°)")
+    axs_kin[3].set_title("COM Velocity Pitch Angle in XZ Plane")
+    axs_kin[3].set_ylabel("Angle (degrees)")
+    axs_kin[3].legend()
+    axs_kin[3].grid(True)
+    add_all_phase_shading(axs_kin[3], time_np, jump_phase_np, add_legend_labels=False)
+    # Add more detailed time ticks for the last subplot
+    axs_kin[3].xaxis.set_major_locator(ticker.MultipleLocator(0.1))
+    axs_kin[3].xaxis.set_minor_locator(ticker.MultipleLocator(0.05))
+    axs_kin[3].xaxis.set_major_formatter(ticker.FormatStrFormatter('%.1f'))
+
+    # ADDED: All Body Heights Plot
+    ax_all_bodies = axs_kin[4]
+    robot_body_names = robot.body_names
+    num_bodies = all_body_heights_np.shape[1]
+    lines_bodies = []
+    labels_bodies = []
+
+    # Determine a color cycle for better visibility if many bodies
+    color_cycle = plt.cm.get_cmap('tab20', num_bodies) # 'tab20' has 20 distinct colors
+
+    for i in range(num_bodies):
+        body_name = robot_body_names[i] if i < len(robot_body_names) else f"Body {i+1}"
+        line, = ax_all_bodies.plot(time_np, all_body_heights_np[:, i], color=color_cycle(i))
+        lines_bodies.append(line)
+        labels_bodies.append(body_name)
+    
+    ax_all_bodies.set_title("All Robot Body Heights")
+    ax_all_bodies.set_ylabel("Height (m)")
+    # Create legend with multiple columns if many bodies
+    ncol_bodies = (num_bodies + 3) // 4 # Aim for roughly 4 items per column
+    ax_all_bodies.legend(lines_bodies, labels_bodies, fontsize='small', ncol=ncol_bodies, loc='upper right')
+    ax_all_bodies.grid(True)
+    add_all_phase_shading(ax_all_bodies, time_np, jump_phase_np, add_legend_labels=False) # No phase legend here, it's on axs_kin[0]
+
+    # Set X label and ticks for the new last subplot
+    ax_all_bodies.set_xlabel("Time (s)")
+    ax_all_bodies.xaxis.set_major_locator(ticker.MultipleLocator(0.1))
+    ax_all_bodies.xaxis.set_minor_locator(ticker.MultipleLocator(0.05))
+    ax_all_bodies.xaxis.set_major_formatter(ticker.FormatStrFormatter('%.1f'))
 
     plt.tight_layout(rect=[0, 0.03, 1, 0.95])
     plot_path = os.path.join(plots_dir, f"base_kinematics_plot_{cmd_filename_suffix}.png")
@@ -602,10 +664,8 @@ def main():
     if args_cli.cmd_magnitude is not None and args_cli.cmd_pitch is not None:
         print(f"[INFO] Overriding command ranges with fixed magnitude: {args_cli.cmd_magnitude}, pitch: {args_cli.cmd_pitch}")
         if hasattr(env_cfg, 'command_ranges') and env_cfg.command_ranges is not None:
-            env_cfg.command_ranges.initial_magnitude_range = (args_cli.cmd_magnitude, args_cli.cmd_magnitude)
-            env_cfg.command_ranges.initial_pitch_range = (args_cli.cmd_pitch, args_cli.cmd_pitch)
-            env_cfg.command_ranges.final_magnitude_range = (args_cli.cmd_magnitude, args_cli.cmd_magnitude)
-            env_cfg.command_ranges.final_pitch_range = (args_cli.cmd_pitch, args_cli.cmd_pitch)
+            env_cfg.command_ranges.magnitude_range = (args_cli.cmd_magnitude, args_cli.cmd_magnitude)
+            env_cfg.command_ranges.pitch_range = (args_cli.cmd_pitch, args_cli.cmd_pitch)
         else:
             print(f"[WARNING] env_cfg for task '{args_cli.task}' does not have 'command_ranges' or it is None. Cannot apply command overrides.")
 
@@ -613,10 +673,10 @@ def main():
     actual_cmd_magnitude = 0.0
     actual_cmd_pitch = 0.0
     if hasattr(env_cfg, 'command_ranges') and env_cfg.command_ranges is not None:
-        if env_cfg.command_ranges.initial_magnitude_range:
-            actual_cmd_magnitude = env_cfg.command_ranges.initial_magnitude_range[0]
-        if env_cfg.command_ranges.initial_pitch_range:
-            actual_cmd_pitch = env_cfg.command_ranges.initial_pitch_range[0]
+        if env_cfg.command_ranges.magnitude_range:
+            actual_cmd_magnitude = env_cfg.command_ranges.magnitude_range[0]
+        if env_cfg.command_ranges.pitch_range:
+            actual_cmd_pitch = env_cfg.command_ranges.pitch_range[0]
     else:
         print(f"[WARNING] env_cfg for task '{args_cli.task}' does not have 'command_ranges' or it is None. Using 0.0 for command values.")
 
@@ -711,6 +771,7 @@ def main():
     episode_any_feet_on_ground = []
     episode_contact_forces = [] # Initialize list for contact forces
     episode_rewards = [] # Initialize list for rewards
+    episode_all_body_heights = [] # ADDED: For storing all body heights
 
     # reset environment
     obs = env.reset()
@@ -757,6 +818,9 @@ def main():
                 current_contact_forces = general_contact_sensor.data.net_forces_w.clone().squeeze(0) # Squeeze batch dim
                 episode_contact_forces.append(current_contact_forces)
                 
+                # ADDED: Collect all body heights
+                all_body_heights_w = env.unwrapped.robot.data.body_pos_w[:, :, 2].clone().squeeze(0) # Squeeze batch dim
+                episode_all_body_heights.append(all_body_heights_w)
 
                 obs, rewards, dones, _ = env.step(actions)
                 episode_rewards.append(rewards.clone().squeeze(0)) # Store rewards
@@ -764,9 +828,6 @@ def main():
                 # perform operations for terminated episodes
                 if len(dones) > 0 and dones[0]: # Check the first (and only) env
                     print("dones[0]: ", dones[0])
-                    #print("base_contact: ", env.unwrapped.termination_manager.get_term("base_contact"))
-                    print("bad_orientation: ", env.unwrapped.termination_manager.get_term("bad_orientation"))
-                    print("time_out: ", env.unwrapped.termination_manager.get_term("time_out"))
                     print(f"[INFO] Episode finished after {len(episode_actions)} steps.")
                     # Don't reset RNN state here, episode is over
                     break # Exit loop after first episode finishes
@@ -812,10 +873,12 @@ def main():
                                           cmd_filename_suffix=cmd_filename_suffix,
                                           cmd_wandb_suffix=cmd_wandb_suffix,
                                           actual_cmd_magnitude=actual_cmd_magnitude,
+                                          actual_cmd_pitch=actual_cmd_pitch,
                                           episode_any_feet_on_ground=episode_any_feet_on_ground,
                                           episode_takeoff_toggle=episode_takeoff_toggle,
                                           episode_contact_forces=episode_contact_forces,
-                                          episode_rewards=episode_rewards) # Pass stored rewards 
+                                          episode_rewards=episode_rewards, # Pass stored rewards 
+                                          episode_all_body_heights=episode_all_body_heights) # ADDED: Pass all body heights
 
         if args_cli.wandb:
             wandb.finish()

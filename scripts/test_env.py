@@ -29,12 +29,18 @@ import matplotlib.pyplot as plt
 
 DEG2RAD = np.pi/180.0
 
-abductor_angle = 45 * DEG2RAD
-hip_angle = 45 * DEG2RAD
-knee_angle = 180 * DEG2RAD
+robot_cfg = MarsJumperRobotCfg()
 
-takeoff_knee_angle = 0 * DEG2RAD
-takeoff_hip_angle = 0 * DEG2RAD
+abductor_angle = robot_cfg.abductor_angle
+hip_angle = robot_cfg.hip_angle
+knee_angle = robot_cfg.knee_angle
+
+
+takeoff_knee_angle = knee_angle
+takeoff_hip_angle = hip_angle
+
+log_duration_steps = 100
+
 
 initial_angle_targets = {
     "LF_HAA": abductor_angle, 
@@ -77,7 +83,6 @@ def design_scene():
     origin = [0.0, 0.0, 0.0]
     
     # Create Mars Jumper Robot
-    robot_cfg = MarsJumperRobotCfg()
     robot_cfg.prim_path = "/World/robot"
     mars_jumper_robot = Articulation(robot_cfg)
     #mars_jumper_robot.print_usd_info()
@@ -151,7 +156,6 @@ def run_simulator(sim: sim_utils.SimulationContext, entities: dict, origins: tor
     count = 0
 
     # --- Logging Setup ---
-    log_duration_steps = 400
     time_log = []
     root_height_log = [] # Initialize root_height_log here
     # Log Left-Front (LF) and Right-Hind (RH) legs
@@ -241,6 +245,11 @@ def run_simulator(sim: sim_utils.SimulationContext, entities: dict, origins: tor
 
         # Write all commands to sim
         robot.write_data_to_sim()
+
+        # Print base height at intervals
+        if count % 50 == 0:
+            base_height = robot.data.root_pos_w[0, 2].item()
+            print(f"[INFO] Step {count}: Robot base height: {base_height:.4f} m")
 
         # Step simulation
         sim.step()

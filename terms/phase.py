@@ -24,15 +24,21 @@ def update_jump_phase(
     base_com_vertical_vel = get_center_of_mass_lin_vel(env)[:, 2]
     env.prev_jump_phase = env.jump_phase.clone()
     
-    vel_not_increasing = base_com_vertical_vel < env.max_takeoff_vel_magnitude - 0.01 #add margin for numerical errors and small variations
+    vel_not_increasing = base_com_vertical_vel < env.max_takeoff_vel_magnitude - 0.1 #add margin for numerical errors and small variations
     
-    env.jump_phase[env.takeoff_mask & vel_not_increasing & (base_height > 0.12)] = Phase.FLIGHT
+    env.jump_phase[env.takeoff_mask & vel_not_increasing & (base_com_vertical_vel > 0.5)] = Phase.FLIGHT
     
-    neg_vertical_vel_mask = base_com_vertical_vel < -0.1
+    neg_vertical_vel_mask = base_com_vertical_vel < -0.5
     #contact_force_mask = any_body_high_contact_force(env)
     
-    #env.jump_phase[env.flight_mask & neg_vertical_vel_mask & (((base_height < 0.2) & contact_force_mask) | (base_height < 0.1))] = Phase.LANDING
-    env.jump_phase[env.flight_mask & neg_vertical_vel_mask & (base_height < 0.22)] = Phase.LANDING
+    # Calculate new condition for any body being too low
+    all_body_heights_w = env.robot.data.body_pos_w[:, :, 2]
+    min_body_height_each_env = torch.min(all_body_heights_w, dim=1).values
+    # Assuming the robot config is accessible via env.robot.cfg
+    min_clearance_config = 0.1
+    any_body_too_low = min_body_height_each_env < min_clearance_config
+
+    env.jump_phase[env.flight_mask & neg_vertical_vel_mask & any_body_too_low] = Phase.LANDING
     
     env.takeoff_mask = env.jump_phase == Phase.TAKEOFF
     env.flight_mask = env.jump_phase == Phase.FLIGHT

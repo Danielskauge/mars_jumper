@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 import numpy as np
 import torch
@@ -13,7 +12,38 @@ from terms.phase import Phase
 
 DEG2RAD = np.pi/180
 
+def walking(
+    env: ManagerBasedRLEnv,
+) -> torch.Tensor:
+    """Terminate when the robot is walking, defined as the robot's root position has displaced more than 0.15 m in x or 0.1 m in y from its spawn position, during the takeoff phase."""
+    condition_phase = env.jump_phase == Phase.TAKEOFF
 
+    # Get the world positions of each environment's origin
+    # env.scene.env_origins has shape (num_envs, 3)
+    env_origins_w = env.scene.env_origins
+
+    # Get the initial positions relative to each environment's local origin
+    # env.robot.data.default_root_state[:, 0:3] has shape (num_envs, 3)
+    initial_pos_local_offset = env.robot.data.default_root_state[:, 0:3]
+
+    # Calculate the initial spawn positions in the world frame
+    spawn_pos_w = env_origins_w + initial_pos_local_offset
+
+    # Current positions in world frame
+    current_pos_w = env.robot.data.root_pos_w # Shape: (num_envs, 3)
+
+    # Displacement in world frame relative to actual spawn position
+    displacement_w = current_pos_w - spawn_pos_w
+
+    condition_pos_x = abs(displacement_w[:, 0]) > 0.30
+    condition_pos_y = abs(displacement_w[:, 1]) > 0.20
+    return condition_phase & (condition_pos_x | condition_pos_y)
+
+def takeoff_timeout(
+    env: ManagerBasedRLEnv,
+    timeout: float = 0.5,
+) -> torch.Tensor:
+    return (env.episode_length_buf * env.step_dt > timeout) & (env.jump_phase == Phase.TAKEOFF)
 
 def bad_knee_angle(
     env: ManagerBasedRLEnv) -> torch.Tensor:
@@ -74,6 +104,17 @@ def bad_orientation(
         
     # Terminate only if both orientation is bad AND phase is allowed for that env
     return torch.logical_and(orientation_bad, phase_match)
+
+def bad_yaw(
+    env: ManagerBasedRLEnv,
+    limit_angle: float = np.pi/2,
+    phases: list[Phase] = [Phase.TAKEOFF, Phase.FLIGHT, Phase.LANDING]
+) -> torch.Tensor:
+    phase_match = torch.zeros_like(env.jump_phase, dtype=torch.bool)
+    for phase in phases:
+        phase_match = torch.logical_or(phase_match, env.jump_phase == phase)
+    yaw = env.robot.data.heading_w
+    return torch.logical_and(torch.abs(yaw) > limit_angle, phase_match)
 
 def self_collision(
     env: ManagerBasedRLEnv,
