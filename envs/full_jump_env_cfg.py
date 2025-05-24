@@ -28,38 +28,84 @@ MARS_GRAVITY = 3.721
 @configclass
 class MetricsBucketingCfg:
     """Configuration for command bucketing and metric tracking."""
-    num_pitch_buckets: int = 0
-    num_magnitude_buckets: int = 0
+    num_height_buckets: int = 0
+    num_length_buckets: int = 0
 
 @configclass
 class CommandRangesCfg:
+    # New primary interface: heighte and length ranges
+    min_target_height = 0.2  # m
+    max_target_height = 0.5  # m
+    min_target_length = 0.0  # m  
+    max_target_length = 0.5  # m
     
-    min_target_height = 0.5#m
-    max_target_height = 0.5#m
+    height_range: Tuple[float, float] = (min_target_height, max_target_height)
+    length_range: Tuple[float, float] = (min_target_length, max_target_length)
     
-    min_magnitude = float(np.sqrt(EARTH_GRAVITY * min_target_height)) #m/s
-    max_magnitude = float(np.sqrt(EARTH_GRAVITY * max_target_height)) #m/s
+    # Curriculum ranges for height/length
+    curriculum_final_height_range: Tuple[float, float] = (min_target_height, max_target_height)
+    curriculum_final_length_range: Tuple[float, float] = (min_target_length, max_target_length)
     
-    pitch_range: Tuple[float, float] = (45*DEG2RAD, 45*DEG2RAD) # Initial pitch range
-    magnitude_range: Tuple[float, float] = (min_magnitude, max_magnitude) # Initial magnitude range
+    # Keep these for backward compatibility and derived calculations
+    @property
+    def pitch_range(self) -> Tuple[float, float]:
+        """Calculate pitch range from height/length ranges
+        
+        Convention: pitch = 0 is vertical, increases clockwise toward horizontal
+        """
+        # Calculate pitch from tan(pitch) = length/(4*height)
+        # Use current range values, not original min/max values
+        min_height, max_height = self.height_range
+        min_length, max_length = self.length_range
+        
+        min_pitch = float(np.arctan(min_length / (4 * max_height)))
+        max_pitch = float(np.arctan(max_length / (4 * min_height)))
+        return (min_pitch, max_pitch)
     
-    curriculum_final_pitch_range: Tuple[float, float] = (45*DEG2RAD, 45*DEG2RAD) # Final pitch range
-    curriculum_final_magnitude_range: Tuple[float, float] = (min_magnitude, max_magnitude) # Final magnitude range
-    
+    @property
+    def magnitude_range(self) -> Tuple[float, float]:
+        """Calculate magnitude range from height/length ranges using physics
+        
+        Convention: pitch = 0 is vertical, increases clockwise toward horizontal
+        """
+        gravity = EARTH_GRAVITY
+        
+        # Use current range values, not original min/max values
+        min_height, max_height = self.height_range
+        min_length, max_length = self.length_range
+        
+        # For each corner of height/length rectangle, calculate required velocity
+        combinations = [
+            (min_height, min_length),
+            (min_height, max_length),
+            (max_height, min_length),
+            (max_height, max_length)
+        ]
+        
+        magnitudes = []
+        for h, l in combinations:
+            pitch = np.arctan(l / (4 * h))  # Using corrected formula
+            if np.sin(2 * pitch) > 0:  # Avoid division by zero
+                v0 = np.sqrt(gravity * l / np.sin(2 * pitch))
+                magnitudes.append(v0)
+        
+        if magnitudes:
+            return (float(min(magnitudes)), float(max(magnitudes)))
+        else:
+            # Fallback to simple calculation based on pure vertical jumps
+            min_magnitude = float(np.sqrt(2 * gravity * min_height))
+            max_magnitude = float(np.sqrt(2 * gravity * max_height))
+            return (min_magnitude, max_magnitude)
+
 @configclass
-class CurriculumCfg:
-    command_range_progression = CurriculumTermCfg(
-        func=curriculums.progress_command_ranges,
-        params={
-            "num_curriculum_levels": 50,
-            "success_rate_threshold": 0.9,
-            "min_steps_between_updates": 150,
-            "enable_regression": False,
-        },
-    )
-
-
-
+class EventCfg:
+    reset_scene_to_default = EventTermCfg(func=mdp.reset_scene_to_default, mode="reset")
+    reset_robot_pose_with_feet_on_ground = EventTermCfg(func=events.reset_robot_pose_with_feet_on_ground, mode="reset", params={
+        "base_height_range": (0.06, 0.10), # (0.06, 0.12),
+        "base_pitch_range_rad": (0*DEG2RAD, 30*DEG2RAD), #(-5*DEG2RAD, 20*DEG2RAD),
+        "front_foot_x_offset_range_cm": (-4, 4), #(-3, 3),
+        "hind_foot_x_offset_range_cm": (-4, 4) #(-4, 1)
+    })
 @configclass
 class RewardsCfg:
     
@@ -75,11 +121,13 @@ class RewardsCfg:
                                        weight=30.0, 
     )
     
+    # takeoff_excess_rotation = RewardTermCfg(func=rewards.attitude_penalty_takeoff_threshold,
+    #                                         params={"threshold_deg": 30},
+    #                                         weight=-0.1)
     # relative_cmd_error_huber = RewardTermCfg(func=rewards.relative_cmd_error_huber,
-    #                                         params={"scale": 7.0,
-    #                                                 "e_max": 0.6,
-    #                                                 "delta": 0.1},
-    #                                         weight=4.0,
+    #                                         params={"delta": 0.1,      # Transition point (in relative error units)
+    #                                                 "e_max": 0.6},     # Max error before reward=0 (in relative error units)
+    #                                         weight=4.0,                # Use weight to control magnitude
     # )
 
     # liftoff_relative_cmd_error = RewardTermCfg( # Sparse reward at the moment of liftoff
@@ -110,19 +158,19 @@ class RewardsCfg:
     
     attitude_error_on_way_down = RewardTermCfg(func=rewards.attitude_error_on_way_down, 
                                               params={"scale": 5.0},
-                                              weight=0.1)
+                                              weight=0.7)
     
     attitude_rotation_flight = RewardTermCfg(func=rewards.attitude_rotation_magnitude, 
                                       params={"kernel": "inverse_quadratic", 
                                               "scale": 5.0,
                                               "phases": [Phase.FLIGHT]},
-                                      weight=0.01)
+                                      weight=0.07)
     
-    # attitude_landing = RewardTermCfg(func=rewards.attitude_rotation_magnitude, 
-    #                                   params={"kernel": "inverse_quadratic", 
-    #                                           "scale": 11.0,
-    #                                           "phases": [Phase.LANDING]},
-    #                                   weight=0.5)
+    attitude_landing = RewardTermCfg(func=rewards.attitude_rotation_magnitude, 
+                                      params={"kernel": "inverse_quadratic", 
+                                              "scale": 11.0,
+                                              "phases": [Phase.LANDING]},
+                                      weight=0.5)
     
     # landing_foot_ground_contact = RewardTermCfg(func=rewards.landing_foot_ground_contact,
     #                                             weight=0.1)
@@ -138,6 +186,8 @@ class RewardsCfg:
                                                                                                  "bad_yaw_takeoff",
                                                                                                  "bad_orientation_flight",
                                                                                                  "bad_yaw_flight",
+                                                                                                 "bad_roll_takeoff",
+                                                                                                 "bad_roll_flight",
                                                                                                  #"takeoff_timeout",
                                                                                                  #"walking"
                                                                                                  ]})
@@ -163,6 +213,20 @@ class RewardsCfg:
     #                                          params={"phases": [Phase.LANDING, Phase.TAKEOFF]} # Example phases
     #                                          )
     
+    # # Standing/landing foot positioning rewards
+    feet_near_ground = RewardTermCfg(func=rewards.feet_near_ground_reward,
+                                     params={"height_threshold": 0.02,  # 2cm threshold
+                                             "ground_height": 0.0,       # Assuming flat ground at z=0
+                                             "phases": [Phase.LANDING]},
+                                     weight=0.1)
+    
+    # # Alternative penalty approach for foot height
+    # feet_height_penalty = RewardTermCfg(func=rewards.feet_height_penalty,
+    #                                     params={"ground_height": 0.0,
+    #                                             "phases": [Phase.LANDING],
+    #                                             "kernel": rewards.Kernel.LINEAR},
+    #                                     weight=-0.05)  # Negative weight since it's a penalty
+
 @configclass
 class TerminationsCfg:
     #bad_takeoff_at_landing = TerminationTermCfg(func=terminations.bad_takeoff_at_landing, params={"relative_error_threshold": 0.1})
@@ -172,18 +236,24 @@ class TerminationsCfg:
     time_out = TerminationTermCfg(func=mdp.time_out, time_out=True)
     #bad_knee_angle = TerminationTermCfg(func=terminations.bad_knee_angle)
     bad_orientation_takeoff = TerminationTermCfg(func=terminations.bad_orientation, params={
-        "limit_angle": np.pi/2, 
+        "limit_angle": np.pi/3, 
         "phases": [Phase.TAKEOFF]
     })
     bad_orientation_flight = TerminationTermCfg(func=terminations.bad_orientation, params={
-        "limit_angle": np.pi/2, 
+        "limit_angle": np.pi/3, 
         "phases": [Phase.FLIGHT]
     })
     
-    bad_yaw_takeoff = TerminationTermCfg(func=terminations.bad_yaw, params={"limit_angle": np.pi/2,
+    bad_yaw_takeoff = TerminationTermCfg(func=terminations.bad_yaw, params={"limit_angle": np.pi/4,
                                                                             "phases": [Phase.TAKEOFF]})
-    bad_yaw_flight = TerminationTermCfg(func=terminations.bad_yaw, params={"limit_angle": np.pi/2,
+    bad_yaw_flight = TerminationTermCfg(func=terminations.bad_yaw, params={"limit_angle": np.pi/4,
                                                                             "phases": [Phase.FLIGHT]})
+    
+    bad_roll_takeoff = TerminationTermCfg(func=terminations.bad_roll, params={"limit_angle": np.pi/4,
+                                                                              "phases": [Phase.TAKEOFF]})
+    bad_roll_flight = TerminationTermCfg(func=terminations.bad_roll, params={"limit_angle": np.pi/4,
+                                                                             "phases": [Phase.FLIGHT]})
+    
     #takeoff_timeout = TerminationTermCfg(func=terminations.takeoff_timeout, params={"timeout": 0.5})
     walking = TerminationTermCfg(func=terminations.walking)
     # illegal_contact = TerminationTermCfg(func=mdp.terminations.illegal_contact, 
@@ -195,18 +265,18 @@ class TerminationsCfg:
 @configclass
 class ActionsCfg:
     #joint_pos = mdp.JointPositionActionCfg(asset_name="robot", debug_vis=True, joint_names=[".*"], use_default_offset=True) 
-    # joint_pos = mdp.JointPositionToLimitsActionCfg(
-    #     asset_name="robot", 
-    #     joint_names=[".*"], # Apply to all joints
-    #     scale=1.0, # Assuming policy output is already in a suitable range like [-1, 1] to be mapped to limits
-    #     rescale_to_limits=True, # This is the key, and it's True by default
-    #     # offset can be used if needed, but typically not if rescale_to_limits handles the full range.
-    #     # If your policy outputs delta from default_joint_pos, you might add default_joint_pos as offset
-    #     # AFTER the unscale_transform, or adjust how unscale_transform is used. 
-    #     # For now, assume policy outputs absolute targets in normalized [-1,1] space.
-    #     debug_vis=True
-    # )
-   joint_pos = mdp.JointPositionActionCfg(asset_name="robot", debug_vis=True, joint_names=[".*"], use_default_offset=True) 
+    joint_pos = mdp.JointPositionToLimitsActionCfg(
+        asset_name="robot", 
+        joint_names=[".*"], # Apply to all joints
+        scale=1.0, # Assuming policy output is already in a suitable range like [-1, 1] to be mapped to limits
+        rescale_to_limits=True, # This is the key, and it's True by default
+        # offset can be used if needed, but typically not if rescale_to_limits handles the full range.
+        # If your policy outputs delta from default_joint_pos, you might add default_joint_pos as offset
+        # AFTER the unscale_transform, or adjust how unscale_transform is used. 
+        # For now, assume policy outputs absolute targets in normalized [-1,1] space.
+        debug_vis=True
+    )
+   #joint_pos = mdp.JointPositionActionCfg(asset_name="robot", debug_vis=True, joint_names=[".*"], use_default_offset=True) 
     
 @configclass
 class ObservationsCfg:
@@ -220,7 +290,7 @@ class ObservationsCfg:
         joint_vel = ObservationTermCfg(func=mdp.joint_vel_rel, noise=Unoise(n_min=-1.5, n_max=1.5))
         previous_actions = ObservationTermCfg(func=mdp.last_action)        
         has_taken_off = ObservationTermCfg(func=observations.has_taken_off)
-        command_vec = ObservationTermCfg(func=observations.takeoff_vel_vec_cmd, noise=Unoise(n_min=-0.01, n_max=0.01))
+        command_vec = ObservationTermCfg(func=observations.takeoff_height_length_cmd, noise=Unoise(n_min=-0.01, n_max=0.01))
 
         def __post_init__(self):
             self.enable_corruption = False 
@@ -228,10 +298,6 @@ class ObservationsCfg:
 
     policy: PolicyCfg = PolicyCfg()
 
-@configclass
-class EventCfg:
-    reset_scene_to_default = EventTermCfg(func=mdp.reset_scene_to_default, mode="reset")
-    
 @configclass
 class MySceneCfg(InteractiveSceneCfg):
     # Restore the original terrain definition
@@ -292,6 +358,17 @@ class MySceneCfg(InteractiveSceneCfg):
             intensity=750.0,
             texture_file=f"{ISAAC_NUCLEUS_DIR}/Materials/Textures/Skies/PolyHaven/kloofendal_43d_clear_puresky_4k.hdr",
         ),
+    )    
+@configclass
+class CurriculumCfg:
+    command_range_progression = CurriculumTermCfg(
+        func=curriculums.progress_command_ranges,
+        params={
+            "num_curriculum_levels": 50,
+            "success_rate_threshold": 0.9,
+            "min_steps_between_updates": 150,
+            "enable_regression": False,
+        },
     )
 
 

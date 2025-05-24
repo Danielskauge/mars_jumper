@@ -49,13 +49,13 @@ def progress_command_ranges(
     min_steps_between_updates: int = 50,
     enable_regression: bool = True,
 ) -> None:
-    """Set the command takeoff vector magnitude ranges for the robot. 
-    The initial range is set to the initial magnitude range of the command term, and will be incremented linearly to the final range over the number of curriculum steps.
+    """Set the command height and length ranges for the robot. 
+    The initial range is set to the initial height/length range of the command term, and will be incremented linearly to the final range over the number of curriculum steps.
     
     Args:
         env: The environment instance
         env_ids: Not used since all environments are affected
-        num_curriculum_levels: Number of curriculum levels to split the curriculum into from 0 to 1 percent completion from initial to final magnitude range
+        num_curriculum_levels: Number of curriculum levels to split the curriculum into from 0 to 1 percent completion from initial to final height/length range
     """  
     
     #Initialize attributes when first called
@@ -67,17 +67,23 @@ def progress_command_ranges(
     
     progress_ratio = env.cmd_curriculum_progress_ratio
     
-    initial_magnitude_range = env.cfg.command_ranges.magnitude_range
-    final_magnitude_range = env.cfg.command_ranges.curriculum_final_magnitude_range
-    current_magnitude_min = initial_magnitude_range[0] + progress_ratio * (final_magnitude_range[0] - initial_magnitude_range[0])
-    current_magnitude_max = initial_magnitude_range[1] + progress_ratio * (final_magnitude_range[1] - initial_magnitude_range[1])
-    env.cmd_magnitude_range = (current_magnitude_min, current_magnitude_max)
+    # Update height ranges
+    initial_height_range = env.cfg.command_ranges.height_range
+    final_height_range = env.cfg.command_ranges.curriculum_final_height_range
+    current_height_min = initial_height_range[0] + progress_ratio * (final_height_range[0] - initial_height_range[0])
+    current_height_max = initial_height_range[1] + progress_ratio * (final_height_range[1] - initial_height_range[1])
+    env.cmd_height_range = (current_height_min, current_height_max)
     
-    initial_pitch_range = env.cfg.command_ranges.pitch_range
-    final_pitch_range = env.cfg.command_ranges.curriculum_final_pitch_range
-    current_pitch_min = initial_pitch_range[0] + progress_ratio * (final_pitch_range[0] - initial_pitch_range[0])
-    current_pitch_max = initial_pitch_range[1] + progress_ratio * (final_pitch_range[1] - initial_pitch_range[1])
-    env.cmd_pitch_range = (current_pitch_min, current_pitch_max)
+    # Update length ranges
+    initial_length_range = env.cfg.command_ranges.length_range
+    final_length_range = env.cfg.command_ranges.curriculum_final_length_range
+    current_length_min = initial_length_range[0] + progress_ratio * (final_length_range[0] - initial_length_range[0])
+    current_length_max = initial_length_range[1] + progress_ratio * (final_length_range[1] - initial_length_range[1])
+    env.cmd_length_range = (current_length_min, current_length_max)
+    
+    # Update derived pitch/magnitude ranges for backward compatibility
+    env.cmd_pitch_range = env.cfg.command_ranges.pitch_range
+    env.cmd_magnitude_range = env.cfg.command_ranges.magnitude_range
     
     current_success_rate = getattr(env, "running_takeoff_success_rate", 0.0)
     previous_recorded_success_rate = getattr(env, "prev_running_takeoff_success_rate", 0.0)
@@ -95,7 +101,7 @@ def progress_command_ranges(
             env.cmd_curriculum_progress_ratio += 1/num_curriculum_levels
             env.steps_since_curriculum_update = 0
             progressed_this_cycle = True
-            print("Advancing takeoff magnitude curriculum: current_step_counter %s, progress ratio %s, mag=[%s, %s]", env.common_step_counter, env.cmd_curriculum_progress_ratio, current_magnitude_min, current_magnitude_max)
+            print("Advancing takeoff command curriculum: current_step_counter %s, progress ratio %s, height=[%s, %s], length=[%s, %s]", env.common_step_counter, env.cmd_curriculum_progress_ratio, current_height_min, current_height_max, current_length_min, current_length_max)
     
     if enable_regression:
         # Try to regress curriculum (if not progressed)
@@ -104,15 +110,17 @@ def progress_command_ranges(
             env.cmd_curriculum_progress_ratio = max(0, env.cmd_curriculum_progress_ratio) # Ensure not < 0
             env.steps_since_curriculum_update = 0
             # progressed_this_cycle = True # This was for the if not progressed_this_cycle condition, not needed to set true here
-            print("Decreasing takeoff magnitude curriculum: current_step_counter %s, progress ratio %s, mag=[%s, %s]", env.common_step_counter, env.cmd_curriculum_progress_ratio, current_magnitude_min, current_magnitude_max)
+            print("Decreasing takeoff command curriculum: current_step_counter %s, progress ratio %s, height=[%s, %s], length=[%s, %s]", env.common_step_counter, env.cmd_curriculum_progress_ratio, current_height_min, current_height_max, current_length_min, current_length_max)
 
     env.prev_running_takeoff_success_rate = current_success_rate
         
     # Need to return state to be logged
     return {
         "progress_ratio": env.cmd_curriculum_progress_ratio,
-        "cmd_magnitude_min": current_magnitude_min,
-        "cmd_magnitude_max": current_magnitude_max,
+        "cmd_height_min": current_height_min,
+        "cmd_height_max": current_height_max,
+        "cmd_length_min": current_length_min,
+        "cmd_length_max": current_length_max,
     }
     
     # Might change success based on reward later

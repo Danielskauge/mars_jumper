@@ -22,9 +22,9 @@ class MarsJumperRobotCfg(ArticulationCfg):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         
-        self.HIP_FLEXION_JOINTS_REGEX: str = ".*_HAA.*" # NOTE: Mismatched names in comments vs. regex - assuming regex is correct
-        self.HIP_ABDUCTION_JOINTS_REGEX: str = ".*_HFE.*" # NOTE: Mismatched names in comments vs. regex - assuming regex is correct
-        self.KNEE_JOINTS_REGEX: str = ".*_KFE.*"
+        self.HAA_REGEX: str = ".*_HAA" # NOTE: Mismatched names in comments vs. regex - assuming regex is correct
+        self.HFE_REGEX: str = ".*_HFE" # NOTE: Mismatched names in comments vs. regex - assuming regex is correct
+        self.KFE_REGEX: str = ".*_KFE"
         self.FEET_REGEX: str = ".*FOOT.*"
         self.AVOID_CONTACT_BODIES_REGEX: List[str] = [".*base.*", ".*HIP.*", ".*THIGH.*", ".*SHANK.*"]
         
@@ -37,9 +37,9 @@ class MarsJumperRobotCfg(ArticulationCfg):
         self.KNEE_LINK_LENGTH: float = 0.11
         
         self.abductor_angle = 0 * DEG2RAD
-        self.hip_angle = -120 * DEG2RAD
-        self.knee_angle = 140 * DEG2RAD
-        self.init_height = 0.06 #was 0.08 at -70 and 140
+        self.hip_angle = -70 * DEG2RAD#-120 * DEG2RAD
+        self.knee_angle = 140 * DEG2RAD#140 * DEG2RAD
+        self.init_height = 0.08 #was 0.08 at -70 and 140, 0.06 at -120 and 140
 
         init_state = ArticulationCfg.InitialStateCfg(
             pos=(0.0, 0.0, self.init_height),
@@ -59,9 +59,14 @@ class MarsJumperRobotCfg(ArticulationCfg):
         },
         )
         
-       
+        #old and too powerful
+        # stall_torque = 2 #Nm
+        # stiffness = 20 #Nm/rad (not sure if that's correct)
+        # damping = 0.2 #Nm/rad/s #original 0.05
+        
+        #new more realistic
         stall_torque = 2 #Nm
-        stiffness = 20 #Nm/rad (not sure if that's correct)
+        stiffness = 10 #Nm/rad (not sure if that's correct)
         damping = 0.2 #Nm/rad/s #original 0.05
 
         actuators = {

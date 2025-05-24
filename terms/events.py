@@ -15,7 +15,7 @@ import numpy as np
 from isaaclab.envs.mdp.events import reset_scene_to_default, reset_joints_by_offset, reset_root_state_uniform
 from terms.phase import Phase
 import torch
-from terms.utils import convert_command_to_euclidean_vector
+from terms.utils import convert_command_to_euclidean_vector, convert_height_length_to_pitch_magnitude
 
 from isaaclab.utils.math import sample_uniform, quat_from_euler_xyz
 import isaaclab.utils.math as math_utils
@@ -23,6 +23,7 @@ from torch import Tensor
 from typing import Dict
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
+from reset_crouch import sample_robot_crouch_pose
     
 def reset_robot_pre_landing_state(env: ManagerBasedRLEnv, 
                                  env_ids: Sequence[int],
@@ -130,7 +131,11 @@ def init_robot_in_flight_phase(env: ManagerBasedRLEnv,
     num_envs_to_reset = len(env_ids)
     device = env.device
 
-    cmd_vel_polar = env.command[env_ids] # Shape: (num_envs, 2) -> [pitch, magnitude]
+    # Convert height/length to pitch/magnitude for ballistic calculations
+    height = env.target_height[env_ids]
+    length = env.target_length[env_ids]
+    pitch, magnitude = convert_height_length_to_pitch_magnitude(height, length, gravity=9.81)
+    cmd_vel_polar = torch.stack([pitch, magnitude], dim=-1) # Shape: (num_envs, 2) -> [pitch, magnitude]
     cmd_vel_cartesian = convert_command_to_euclidean_vector(cmd_vel_polar) # Shape: (num_envs, 2)
     
     x_dot_0 = cmd_vel_cartesian[:, 0] # Shape: (num_envs)
@@ -263,4 +268,63 @@ def reset_robot_crouch_state(env: ManagerBasedRLEnv,
     env.robot.write_root_state_to_sim(root_state, env_ids=env_ids)
     env._phase_buffer[env_ids] = Phase.CROUCH
     #print("Reset Event: Reset to crouch state of envs %s", env_ids)
+    
+def reset_robot_pose_with_feet_on_ground(env: ManagerBasedRLEnv, 
+                             env_ids: Sequence[int],
+                             base_height_range: Tuple[float, float],
+                             base_pitch_range_rad: Tuple[float, float],
+                             front_foot_x_offset_range_cm: Tuple[float, float],
+                             hind_foot_x_offset_range_cm: Tuple[float, float],
+                             ) -> None:
+    
+    # # Base pose (position x, y are from default, z is sampled height)
+    base_height, base_pitch, \
+    front_hip_angle, front_knee_angle, \
+    hind_hip_angle, hind_knee_angle = sample_robot_crouch_pose(
+                                                                base_height_range=base_height_range,
+                                                                base_pitch_range_rad=base_pitch_range_rad,
+                                                                front_foot_x_offset_range_cm=front_foot_x_offset_range_cm,
+                                                                hind_foot_x_offset_range_cm=hind_foot_x_offset_range_cm,
+                                                                device=env.device,
+                                                                num_envs=len(env_ids)
+                                                            )
+    base_quat_w = quat_from_euler_xyz(torch.zeros_like(base_pitch), base_pitch, torch.zeros_like(base_pitch))
+    
+    root_state = env.robot.data.default_root_state[env_ids].clone() 
+    root_state[:, :2] = env.scene.env_origins[env_ids, :2] + env.robot.data.default_root_state[env_ids, :2]
+
+    root_state[:, 2] = base_height
+    root_state[:, 3:7] = base_quat_w
+    root_state[:, 7:] = 0.0  # Zero linear and angular velocities
+    
+    joint_pos = env.robot.data.default_joint_pos[env_ids].clone()
+
+    # Get joint indices using the robot's find_joints method
+    # The [0] extracts the tensor of indices from the (indices, names) tuple.
+    rf_hfe_idx = env.robot.find_joints("RF_HFE")[0]
+    lf_hfe_idx = env.robot.find_joints("LF_HFE")[0]
+    rh_hfe_idx = env.robot.find_joints("RH_HFE")[0]
+    lh_hfe_idx = env.robot.find_joints("LH_HFE")[0]
+
+    rf_kfe_idx = env.robot.find_joints("RF_KFE")[0]
+    lf_kfe_idx = env.robot.find_joints("LF_KFE")[0]
+    rh_kfe_idx = env.robot.find_joints("RH_KFE")[0]
+    lh_kfe_idx = env.robot.find_joints("LH_KFE")[0]
+
+    joint_pos[:, rf_hfe_idx] = front_hip_angle
+    joint_pos[:, lf_hfe_idx] = front_hip_angle
+    joint_pos[:, rh_hfe_idx] = hind_hip_angle
+    joint_pos[:, lh_hfe_idx] = hind_hip_angle
+
+    joint_pos[:, rf_kfe_idx] = front_knee_angle
+    joint_pos[:, lf_kfe_idx] = front_knee_angle
+    joint_pos[:, rh_kfe_idx] = hind_knee_angle
+    joint_pos[:, lh_kfe_idx] = hind_knee_angle
+    
+    joint_vel = env.robot.data.default_joint_vel[env_ids].clone()
+    
+    env.robot.write_root_state_to_sim(root_state, env_ids=env_ids) 
+    env.robot.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids)
+
+    
     

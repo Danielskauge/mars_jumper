@@ -16,19 +16,8 @@ import yaml
 
 from isaaclab.app import AppLauncher
 
-# Define a helper function to parse comma-separated floats
-def parse_float_tuple(string):
-    try:
-        return tuple(map(float, string.split(',')))
-    except ValueError:
-        raise argparse.ArgumentTypeError("Ranges must be comma-separated floats (e.g., '0.5,1.5')")
-
 # add argparse arguments
 parser = argparse.ArgumentParser(description="Play a checkpoint of an RL agent from RL-Games for multiple episodes.")
-# Arguments for command ranges (optional)
-parser.add_argument("--cmd_magnitude_range", type=parse_float_tuple, default=None, help="Range for command magnitude (min,max), e.g., '0.5,1.5'")
-parser.add_argument("--cmd_pitch_range", type=parse_float_tuple, default=None, help="Range for command pitch (min,max), e.g., '-0.2,0.2'")
-
 parser.add_argument("--video", action="store_true", default=True, help="Record a video spanning all episodes.")
 parser.add_argument("--wandb", action="store_true", default=False, help="Log video to WandB (if video is enabled).")
 parser.add_argument("--video_length_s", type=int, default=10, help="Length of the recorded video (in seconds).")
@@ -37,7 +26,7 @@ parser.add_argument(
 )
 
 parser.add_argument("--num_envs", type=int, default=1, help="Number of environments to simulate.")
-parser.add_argument("--task", type=str, required=True, help="Name of the task.")
+parser.add_argument("--task", type=str, default="full-jump", required=False, help="Name of the task.")
 parser.add_argument("--checkpoint", type=str, default=None, help="Path to model checkpoint.")
 parser.add_argument(
     "--use_pretrained_checkpoint",
@@ -88,33 +77,6 @@ def main():
     env_cfg = parse_env_cfg(
         args_cli.task, device=args_cli.device, num_envs=args_cli.num_envs, use_fabric=not args_cli.disable_fabric
     )
-
-    # Define default ranges from the config if not overridden
-    default_mag_range = env_cfg.command_ranges.initial_magnitude_range
-    default_pitch_range = env_cfg.command_ranges.initial_pitch_range
-
-    # Construct filename prefix based on command ranges
-    mag_range_to_use = args_cli.cmd_magnitude_range if args_cli.cmd_magnitude_range is not None else default_mag_range
-    pitch_range_to_use = args_cli.cmd_pitch_range if args_cli.cmd_pitch_range is not None else default_pitch_range
-    
-    # Format ranges for filename, handling potential None values if defaults are also None
-    mag_str = f"mag{mag_range_to_use[0]:.1f}-{mag_range_to_use[1]:.1f}" if mag_range_to_use else "mag_default"
-    pitch_str = f"pitch{pitch_range_to_use[0]:.1f}-{pitch_range_to_use[1]:.1f}" if pitch_range_to_use else "pitch_default"
-    video_name_prefix = f"{mag_str}_{pitch_str}"
-
-
-    # Override the command ranges in env_cfg if provided via CLI
-    if args_cli.cmd_magnitude_range is not None:
-        if len(args_cli.cmd_magnitude_range) != 2:
-            raise ValueError(f"Invalid magnitude range: {args_cli.cmd_magnitude_range}. Must have 2 values.")
-        env_cfg.command_ranges.initial_magnitude_range = args_cli.cmd_magnitude_range
-        print(f"[INFO] Overriding command magnitude range to: {args_cli.cmd_magnitude_range}")
-    if args_cli.cmd_pitch_range is not None:
-        if len(args_cli.cmd_pitch_range) != 2:
-            raise ValueError(f"Invalid pitch range: {args_cli.cmd_pitch_range}. Must have 2 values.")
-        env_cfg.command_ranges.initial_pitch_range = args_cli.cmd_pitch_range
-        print(f"[INFO] Overriding command pitch range to: {args_cli.cmd_pitch_range}")
-
     agent_cfg = load_cfg_from_registry(args_cli.task, "rl_games_cfg_entry_point")
 
     # specify directory for logging experiments
@@ -153,6 +115,9 @@ def main():
     # convert to single-agent instance if required by the RL algorithm
     if isinstance(env.unwrapped, DirectMARLEnv):
         env = multi_agent_to_single_agent(env)
+
+    # Construct video_name_prefix based on command ranges
+    video_name_prefix = "episode"  # Default prefix as cmd_ args are removed
 
     # wrap for video recording if enabled
     video_folder = os.path.join(log_root_path, log_dir, "videos", "play_multiple")
@@ -258,9 +223,9 @@ def main():
         print(f"[INFO] Completed {total_episodes_done} episodes in {timestep} steps.")
         # Save video to wandb if enabled and video was recorded
         if args_cli.wandb and video_folder:
-            save_video_to_wandb(video_folder, log_dir, video_name_prefix)
+            save_video_to_wandb(video_folder, log_dir, video_name_prefix, env)
 
-def save_video_to_wandb(video_folder, log_dir, video_name_prefix):
+def save_video_to_wandb(video_folder, log_dir, video_name_prefix, env):
     with open(os.path.join(log_dir, "params/agent.yaml"), "r") as f:
         data = yaml.safe_load(f)
 

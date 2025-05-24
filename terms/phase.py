@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 import torch
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.sensors import ContactSensor
-from terms.utils import get_center_of_mass_lin_vel, all_feet_off_the_ground, any_body_high_contact_force
+from terms.utils import get_center_of_mass_lin_vel, all_feet_off_the_ground, any_body_high_contact_force, get_center_of_mass_pos
 
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedEnv
@@ -20,25 +20,27 @@ def update_jump_phase(
     env: ManagerBasedEnv, 
 ) -> None:
     """Update the robot phase for the specified environments"""
-    base_height = env.robot.data.root_pos_w[:, 2]
-    base_com_vertical_vel = get_center_of_mass_lin_vel(env)[:, 2]
+    com_vel = get_center_of_mass_lin_vel(env)  # Shape: (num_envs, 3) [x, y, z]
+    com_vel_magnitude = torch.norm(com_vel, dim=-1)
     env.prev_jump_phase = env.jump_phase.clone()
     
-    vel_not_increasing = base_com_vertical_vel < env.max_takeoff_vel_magnitude - 0.1 #add margin for numerical errors and small variations
+    vel_not_increasing = com_vel_magnitude < env.max_takeoff_vel_magnitude - 0.1 #add margin for numerical errors and small variations
     
-    env.jump_phase[env.takeoff_mask & vel_not_increasing & (base_com_vertical_vel > 0.5)] = Phase.FLIGHT
+    height_condition = get_center_of_mass_pos(env)[:, 2] > 0.2
+    vel_condition = vel_not_increasing & (com_vel_magnitude > 0.5)
     
-    neg_vertical_vel_mask = base_com_vertical_vel < -0.5
-    #contact_force_mask = any_body_high_contact_force(env)
+    env.jump_phase[env.takeoff_mask & (vel_condition | height_condition)] = Phase.FLIGHT
+    
+    # Fix: Check for negative vertical velocity (falling) instead of very low total velocity
+    falling_condition = com_vel[:, 2] < -0.1  # Z component negative (falling downward)
     
     # Calculate new condition for any body being too low
     all_body_heights_w = env.robot.data.body_pos_w[:, :, 2]
-    min_body_height_each_env = torch.min(all_body_heights_w, dim=1).values
     # Assuming the robot config is accessible via env.robot.cfg
-    min_clearance_config = 0.1
-    any_body_too_low = min_body_height_each_env < min_clearance_config
+    min_clearance_config = 0.10
+    any_body_too_low = torch.any(all_body_heights_w < min_clearance_config, dim=-1)
 
-    env.jump_phase[env.flight_mask & neg_vertical_vel_mask & any_body_too_low] = Phase.LANDING
+    env.jump_phase[env.flight_mask & falling_condition & any_body_too_low] = Phase.LANDING
     
     env.takeoff_mask = env.jump_phase == Phase.TAKEOFF
     env.flight_mask = env.jump_phase == Phase.FLIGHT

@@ -1,30 +1,17 @@
-# Copyright (c) 2022-2025, The Isaac Lab Project Developers.
-# All rights reserved.
-#
-# SPDX-License-Identifier: BSD-3-Clause
-
-"""Script to play a checkpoint for a single episode of an RL agent from RL-Games."""
-
-"""Launch Isaac Sim Simulator first."""
-
 import argparse
 import os
 import shutil
-
+import json # Added import
 from networkx import complement
 import numpy as np
 import wandb
 import yaml
-
 from isaaclab.app import AppLauncher
-# Add necessary imports for loading OmegaConf and getting EnvCfg class
 from omegaconf import OmegaConf
-# import isaaclab.sim as sim_utils # Not strictly needed for the edit itself, but good for context
 
-# add argparse arguments
 parser = argparse.ArgumentParser(description="Play a checkpoint of an RL agent from RL-Games for a single episode.")
-parser.add_argument("--cmd_magnitude", type=float, default=None, help="Fixed command magnitude.")
-parser.add_argument("--cmd_pitch", type=float, default=None, help="Fixed command pitch.")
+parser.add_argument("--cmd_height", type=float, default=0.3, help="Fixed command height (default: 0.3m).")
+parser.add_argument("--cmd_length", type=float, default=0.0, help="Fixed command length (default: 0.0m).")
 parser.add_argument("--wandb", action="store_true", default=False, help="Log video and plots to WandB.")
 parser.add_argument(
     "--disable_fabric", action="store_true", default=False, help="Disable fabric and use USD I/O operations."
@@ -32,20 +19,29 @@ parser.add_argument(
 parser.add_argument("--task", type=str, default="full-jump", help="Name of the task.")
 parser.add_argument("--checkpoint", type=str, default=None, help="Path to model checkpoint (mandatory).")
 parser.add_argument("--real-time", action="store_true", default=False, help="Run in real-time, if possible.")
-parser.add_argument("--video", action="store_true", default=False, help="Record video of the episode.")
-parser.add_argument("--plot", action="store_true", default=False, help="Generate plots of episode data.")
-# append AppLauncher cli args
+parser.add_argument("--no-video", action="store_true", default=False, help="Disable video recording.")
+parser.add_argument("--no-plot", action="store_true", default=False, help="Disable plot generation.")
 AppLauncher.add_app_launcher_args(parser)
-# parse the arguments
+
+# Add new arguments for initial pose
+parser.add_argument("--base_height", type=float, default=0.08, help="Initial base height of the robot (meters). Default: 0.08m.")
+parser.add_argument("--base_pitch", type=float, default=0.0, help="Initial base pitch of the robot (degrees). Default: 0.0deg.")
+parser.add_argument("--front_feet_offset", type=float, default=0.0, help="Initial front feet x-offset relative to hip (cm). Default: 0.0cm.")
+parser.add_argument("--hind_feet_offset", type=float, default=0.0, help="Initial hind feet x-offset relative to hip (cm). Default: 0.0cm.")
+
 args_cli = parser.parse_args()
 
-# Force settings for single episode playback
-args_cli.num_envs = 1
-#args_cli.video = True # Always record video
-args_cli.enable_cameras = True # Enable cameras for video
+# Force headless mode to always be enabled
+args_cli.headless = True
+# Set video and plot based on the negative flags
+args_cli.video = not args_cli.no_video
+args_cli.plot = not args_cli.no_plot
 
+args_cli.num_envs = 1
+args_cli.enable_cameras = True # Enable cameras for video
 app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
+import envs
 
 import gymnasium as gym
 import math
@@ -58,22 +54,14 @@ from isaaclab_rl.rl_games import RlGamesGpuEnv, RlGamesVecEnvWrapper
 from rl_games.common import env_configurations, vecenv
 from rl_games.common.player import BasePlayer
 from rl_games.torch_runner import Runner
-
 from isaaclab.envs import DirectMARLEnv, multi_agent_to_single_agent
 from isaaclab.utils.assets import retrieve_file_path
 from isaaclab.utils.dict import print_dict
-from isaaclab.utils.pretrained_checkpoint import get_published_pretrained_checkpoint
-from isaaclab.managers import SceneEntityCfg
 from isaaclab.sensors.contact_sensor import ContactSensor # Import ContactSensor
-
-import isaaclab_tasks  # noqa: F401
 from isaaclab_tasks.utils import get_checkpoint_path, load_cfg_from_registry, parse_env_cfg
-
-import envs
 from terms.utils import get_center_of_mass_lin_vel, all_feet_off_the_ground, any_feet_on_the_ground
 from terms.phase import Phase # Import Phase enum
 from terms.observations import has_taken_off
-
 
 def plot_episode_data(robot, 
                       general_contact_sensor, 
@@ -83,14 +71,17 @@ def plot_episode_data(robot,
                       joint_torques, 
                       com_lin_vel,
                       base_height, 
+                      base_x_pos,
                       jump_phase, 
                       feet_off_ground, 
                       dt, 
                       log_dir, 
-                      cmd_filename_suffix, 
-                      cmd_wandb_suffix, 
+                      cmd_filename_suffix,
+                      cmd_wandb_suffix,
                       actual_cmd_magnitude, 
                       actual_cmd_pitch,
+                      actual_cmd_height,
+                      actual_cmd_length,
                       episode_any_feet_on_ground, 
                       episode_takeoff_toggle, 
                       episode_contact_forces, 
@@ -98,8 +89,8 @@ def plot_episode_data(robot,
                       episode_all_body_heights):
     """Plots the recorded actions, joint angles, torques, target positions, COM velocity, base height, feet status, contact forces, and rewards."""
     print("[INFO] Plotting episode data...")
-    plots_dir = os.path.join(log_dir, "plots") # Define plots directory path
-    os.makedirs(plots_dir, exist_ok=True) # Create plots directory if it doesn't exist
+    plots_dir = os.path.join(log_dir, "plots", cmd_filename_suffix)
+    os.makedirs(plots_dir, exist_ok=True) # Create run-specific plots directory
 
     # --- Convert data to numpy ---
     actions_np = torch.stack(clipped_actions).cpu().numpy()
@@ -108,6 +99,7 @@ def plot_episode_data(robot,
     target_positions_np = torch.stack(scaled_actions).cpu().numpy()
     com_lin_vel_np = torch.stack(com_lin_vel).cpu().numpy()
     base_height_np = torch.stack(base_height).cpu().numpy()
+    base_x_pos_np = torch.stack(base_x_pos).cpu().numpy()
     jump_phase_np = torch.stack(jump_phase).cpu().numpy().flatten() # Ensure flat
     feet_off_ground_np = torch.stack(feet_off_ground).cpu().numpy().astype(int) # Boolean status based on filtered ground contact
     any_feet_on_ground_np = torch.stack(episode_any_feet_on_ground).cpu().numpy().astype(int) # Boolean status based on filtered ground contact
@@ -241,59 +233,108 @@ def plot_episode_data(robot,
         ax.grid(True)
     axs_ctrl[-1].set_xlabel("Time (s)")
     plt.tight_layout(rect=[0, 0.03, 1, 0.95]) # Adjust layout for suptitle
-    plot_path = os.path.join(plots_dir, f"joint_control_plot_{cmd_filename_suffix}.png")
+    plot_path = os.path.join(plots_dir, f"joint_control_plot.png")
     plt.savefig(plot_path)
     plt.close(fig_ctrl)
-    wandb_plots[f"joint_control_plot_{cmd_wandb_suffix}"] = plot_path
+    wandb_plots[f"plots/{cmd_filename_suffix}/joint_control_plot"] = plot_path # Hierarchical WandB key
 
-    # 2. Base Kinematics (Height, COM Vel Components, COM Vel Mag)
+    # 2. Base Kinematics (COM Trajectory, COM Vel Components, COM Vel Mag)
     print("[INFO] Plotting Base Kinematics...")
-    fig_kin, axs_kin = plt.subplots(5, 1, figsize=(15, 20), sharex=True) # Changed from 4 to 5 subplots, adjusted figsize
+    fig_kin, axs_kin = plt.subplots(6, 1, figsize=(15, 24), sharex=False) # Changed from 5 to 6 subplots, increased figsize
     fig_kin.suptitle('Base Kinematics', fontsize=16)
-    # Height
-    axs_kin[0].plot(time_np, base_height_np, label="Base Height")
-    axs_kin[0].set_title("Base Height")
-    axs_kin[0].set_ylabel("Height (m)")
-    axs_kin[0].legend()
+    
+    # COM Trajectory (Z vs X)
+    # Plot actual robot COM positions in absolute world coordinates
+    axs_kin[0].plot(base_x_pos_np, base_height_np, 'b-', label="Actual COM Trajectory", linewidth=2)
+    
+    # Create desired trajectory (parabolic path) in absolute world coordinates
+    if actual_cmd_length > 0 and actual_cmd_height > 0:
+        # Generate parabolic trajectory from (0, 0) to (target_length, 0) with peak at target_height
+        x_desired = np.linspace(0, actual_cmd_length, 100)
+        # Parabolic equation: z = 4*h*(x/L)*(1 - x/L) where h is peak height and L is length
+        z_desired = 4 * actual_cmd_height * (x_desired / actual_cmd_length) * (1 - x_desired / actual_cmd_length)
+        axs_kin[0].plot(x_desired, z_desired, 'r--', label=f"Desired Trajectory (H={actual_cmd_height:.2f}m, L={actual_cmd_length:.2f}m)", linewidth=2)
+    
+    # Mark start and target points in world coordinates
+    axs_kin[0].plot(0, 0, 'go', markersize=8, label="World Origin (0,0)")
+    if actual_cmd_length > 0:
+        axs_kin[0].plot(actual_cmd_length, 0, 'ro', markersize=8, label=f"Target Landing ({actual_cmd_length:.2f}m)")
+    if actual_cmd_height > 0:
+        peak_x = actual_cmd_length / 2 if actual_cmd_length > 0 else 0
+        axs_kin[0].plot(peak_x, actual_cmd_height, 'r^', markersize=8, label=f"Target Peak ({actual_cmd_height:.2f}m)")
+    
+    # Mark robot's actual starting position
+    axs_kin[0].plot(base_x_pos_np[0], base_height_np[0], 'bs', markersize=8, label=f"Robot Start ({base_x_pos_np[0]:.3f}, {base_height_np[0]:.3f})")
+    
+    axs_kin[0].set_title("COM Trajectory (Height vs Distance) - World Coordinates")
+    axs_kin[0].set_xlabel("X Position (m)")
+    axs_kin[0].set_ylabel("Z Position (m)")
+    axs_kin[0].legend(loc='upper right', fontsize='small')
     axs_kin[0].grid(True)
-    add_all_phase_shading(axs_kin[0], time_np, jump_phase_np, add_legend_labels=True) # Add phase legend here
+    # Removed set_aspect('equal', adjustable='box') to allow the plot to use full width
+    # Note: Phase shading would be confusing on a trajectory plot, so we skip it here
+    
+    # COM Height vs Time
+    axs_kin[1].plot(time_np, base_height_np, 'b-', label="COM Height", linewidth=2)
+    if actual_cmd_height > 0:
+        axs_kin[1].axhline(y=actual_cmd_height, color='r', linestyle='--', label=f"Target Height ({actual_cmd_height:.2f}m)", linewidth=2)
+    axs_kin[1].set_title("COM Height vs Time")
+    axs_kin[1].set_xlabel("Time (s)")
+    axs_kin[1].set_ylabel("Height (m)")
+    axs_kin[1].legend(loc='upper right', fontsize='small')
+    axs_kin[1].grid(True)
+    axs_kin[1].xaxis.set_major_locator(ticker.MultipleLocator(0.1))
+    axs_kin[1].xaxis.set_minor_locator(ticker.MultipleLocator(0.05))
+    axs_kin[1].xaxis.set_major_formatter(ticker.FormatStrFormatter('%.1f'))
+    add_all_phase_shading(axs_kin[1], time_np, jump_phase_np, add_legend_labels=False)
+
     # COM Vel Components
     vel_components = ['X', 'Y', 'Z']
     for i in range(3):
-        axs_kin[1].plot(time_np, com_lin_vel_np[:, i], label=f"COM Vel {vel_components[i]}")
-    axs_kin[1].set_title("COM Linear Velocity Components")
-    axs_kin[1].set_ylabel("Velocity (m/s)")
-    axs_kin[1].legend()
-    axs_kin[1].grid(True)
-    add_all_phase_shading(axs_kin[1], time_np, jump_phase_np, add_legend_labels=False)
+        axs_kin[2].plot(time_np, com_lin_vel_np[:, i], label=f"COM Vel {vel_components[i]}")
+    axs_kin[2].set_title("COM Linear Velocity Components")
+    axs_kin[2].set_xlabel("Time (s)")
+    axs_kin[2].set_ylabel("Velocity (m/s)")
+    axs_kin[2].legend(loc='upper right', fontsize='small')
+    axs_kin[2].grid(True)
+    axs_kin[2].xaxis.set_major_locator(ticker.MultipleLocator(0.1))
+    axs_kin[2].xaxis.set_minor_locator(ticker.MultipleLocator(0.05))
+    axs_kin[2].xaxis.set_major_formatter(ticker.FormatStrFormatter('%.1f'))
+    add_all_phase_shading(axs_kin[2], time_np, jump_phase_np, add_legend_labels=False) # Don't add phase legend here to avoid overriding velocity components legend
+    
     # COM Vel Magnitude
     com_lin_vel_mag = np.linalg.norm(com_lin_vel_np, axis=1)
-    axs_kin[2].plot(time_np, com_lin_vel_mag, label="COM Velocity Magnitude")
-    axs_kin[2].axhline(y=actual_cmd_magnitude, color='r', linestyle='--', label=f"Command Mag ({actual_cmd_magnitude:.2f})")
-    axs_kin[2].set_title("COM Linear Velocity Magnitude")
-    axs_kin[2].set_ylabel("Velocity (m/s)")
-    axs_kin[2].legend()
-    axs_kin[2].grid(True)
-    add_all_phase_shading(axs_kin[2], time_np, jump_phase_np, add_legend_labels=False)
-    # COM Vel Angle (XZ-plane for Pitch)
-    com_vel_pitch_rad = np.arctan2(com_lin_vel_np[:, 0], com_lin_vel_np[:, 2]) # X-component (index 0), Z-component (index 2). Angle from +Z, positive towards +X.
-    com_vel_pitch_deg = np.degrees(com_vel_pitch_rad)
-    axs_kin[3].plot(time_np, com_vel_pitch_deg, label="COM Velocity Pitch Angle (XZ-plane)")
-    # Add command pitch line if available and meaningful
-    actual_cmd_pitch_deg = math.degrees(actual_cmd_pitch) # actual_cmd_pitch is in radians
-    axs_kin[3].axhline(y=actual_cmd_pitch_deg, color='g', linestyle='--', label=f"Command Pitch ({actual_cmd_pitch_deg:.1f}°)")
-    axs_kin[3].set_title("COM Velocity Pitch Angle in XZ Plane")
-    axs_kin[3].set_ylabel("Angle (degrees)")
+    axs_kin[3].plot(time_np, com_lin_vel_mag, label="COM Velocity Magnitude")
+    axs_kin[3].axhline(y=actual_cmd_magnitude, color='r', linestyle='--', label=f"Command Mag ({actual_cmd_magnitude:.2f})")
+    axs_kin[3].set_title("COM Linear Velocity Magnitude")
+    axs_kin[3].set_xlabel("Time (s)")
+    axs_kin[3].set_ylabel("Velocity (m/s)")
     axs_kin[3].legend()
     axs_kin[3].grid(True)
-    add_all_phase_shading(axs_kin[3], time_np, jump_phase_np, add_legend_labels=False)
-    # Add more detailed time ticks for the last subplot
     axs_kin[3].xaxis.set_major_locator(ticker.MultipleLocator(0.1))
     axs_kin[3].xaxis.set_minor_locator(ticker.MultipleLocator(0.05))
     axs_kin[3].xaxis.set_major_formatter(ticker.FormatStrFormatter('%.1f'))
+    add_all_phase_shading(axs_kin[3], time_np, jump_phase_np, add_legend_labels=False)
 
-    # ADDED: All Body Heights Plot
-    ax_all_bodies = axs_kin[4]
+    # COM Vel Angle (XZ-plane for Pitch)
+    com_vel_pitch_rad = np.arctan2(com_lin_vel_np[:, 0], com_lin_vel_np[:, 2]) # X-component (index 0), Z-component (index 2). Angle from +Z, positive towards +X.
+    com_vel_pitch_deg = np.degrees(com_vel_pitch_rad)
+    axs_kin[4].plot(time_np, com_vel_pitch_deg, label="COM Velocity Pitch Angle (XZ-plane)")
+    # Add command pitch line if available and meaningful
+    actual_cmd_pitch_deg = math.degrees(actual_cmd_pitch) # actual_cmd_pitch is in radians
+    axs_kin[4].axhline(y=actual_cmd_pitch_deg, color='g', linestyle='--', label=f"Command Pitch ({actual_cmd_pitch_deg:.1f}°)")
+    axs_kin[4].set_title("COM Velocity Pitch Angle in XZ Plane")
+    axs_kin[4].set_xlabel("Time (s)")
+    axs_kin[4].set_ylabel("Angle (degrees)")
+    axs_kin[4].legend()
+    axs_kin[4].grid(True)
+    axs_kin[4].xaxis.set_major_locator(ticker.MultipleLocator(0.1))
+    axs_kin[4].xaxis.set_minor_locator(ticker.MultipleLocator(0.05))
+    axs_kin[4].xaxis.set_major_formatter(ticker.FormatStrFormatter('%.1f'))
+    add_all_phase_shading(axs_kin[4], time_np, jump_phase_np, add_legend_labels=False)
+
+    # All Body Heights Plot
+    ax_all_bodies = axs_kin[5]
     robot_body_names = robot.body_names
     num_bodies = all_body_heights_np.shape[1]
     lines_bodies = []
@@ -314,7 +355,7 @@ def plot_episode_data(robot,
     ncol_bodies = (num_bodies + 3) // 4 # Aim for roughly 4 items per column
     ax_all_bodies.legend(lines_bodies, labels_bodies, fontsize='small', ncol=ncol_bodies, loc='upper right')
     ax_all_bodies.grid(True)
-    add_all_phase_shading(ax_all_bodies, time_np, jump_phase_np, add_legend_labels=False) # No phase legend here, it's on axs_kin[0]
+    add_all_phase_shading(ax_all_bodies, time_np, jump_phase_np, add_legend_labels=False) # No phase legend here, it's on axs_kin[1]
 
     # Set X label and ticks for the new last subplot
     ax_all_bodies.set_xlabel("Time (s)")
@@ -323,10 +364,10 @@ def plot_episode_data(robot,
     ax_all_bodies.xaxis.set_major_formatter(ticker.FormatStrFormatter('%.1f'))
 
     plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-    plot_path = os.path.join(plots_dir, f"base_kinematics_plot_{cmd_filename_suffix}.png")
+    plot_path = os.path.join(plots_dir, f"base_kinematics_plot.png")
     plt.savefig(plot_path)
     plt.close(fig_kin)
-    wandb_plots[f"base_kinematics_plot_{cmd_wandb_suffix}"] = plot_path
+    wandb_plots[f"plots/{cmd_filename_suffix}/base_kinematics_plot"] = plot_path # Hierarchical WandB key
 
     # 3. Contact Status & Forces
     print("[INFO] Plotting Contact Status & Forces...")
@@ -439,10 +480,10 @@ def plot_episode_data(robot,
     
     # Adjust layout for the entire figure
     plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-    plot_path = os.path.join(plots_dir, f"contact_forces_plot_{cmd_filename_suffix}.png") 
+    plot_path = os.path.join(plots_dir, f"contact_forces_plot.png")
     plt.savefig(plot_path)
     plt.close(fig_contact)
-    wandb_plots[f"contact_forces_plot_{cmd_wandb_suffix}"] = plot_path
+    wandb_plots[f"plots/{cmd_filename_suffix}/contact_forces_plot"] = plot_path # Hierarchical WandB key
 
     # 4. Joint Torques
     print("[INFO] Plotting Joint Torques...")
@@ -478,10 +519,10 @@ def plot_episode_data(robot,
     axs_torq[-1].xaxis.set_major_formatter(ticker.FormatStrFormatter('%.1f'))
 
     plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-    plot_path = os.path.join(plots_dir, f"joint_torques_plot_{cmd_filename_suffix}.png")
+    plot_path = os.path.join(plots_dir, f"joint_torques_plot.png")
     plt.savefig(plot_path)
     plt.close(fig_torq)
-    wandb_plots[f"joint_torques_plot_{cmd_wandb_suffix}"] = plot_path
+    wandb_plots[f"plots/{cmd_filename_suffix}/joint_torques_plot"] = plot_path # Hierarchical WandB key
 
     # 5. Rewards & Returns
     if rewards_available:
@@ -515,10 +556,10 @@ def plot_episode_data(robot,
         axs_rew[1].xaxis.set_major_formatter(ticker.FormatStrFormatter('%.1f'))
 
         plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-        plot_path = os.path.join(plots_dir, f"rewards_plot_{cmd_filename_suffix}.png")
+        plot_path = os.path.join(plots_dir, f"rewards_plot.png")
         plt.savefig(plot_path)
         plt.close(fig_rew)
-        wandb_plots[f"rewards_plot_{cmd_wandb_suffix}"] = plot_path
+        wandb_plots[f"plots/{cmd_filename_suffix}/rewards_plot"] = plot_path # Hierarchical WandB key
     else:
         print("[INFO] Skipping Rewards plot (no data).")
 
@@ -556,10 +597,10 @@ def plot_episode_data(robot,
     axs_act[-1].xaxis.set_major_formatter(ticker.FormatStrFormatter('%.1f'))
 
     plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-    plot_path = os.path.join(plots_dir, f"clipped_actions_plot_{cmd_filename_suffix}.png")
+    plot_path = os.path.join(plots_dir, f"clipped_actions_plot.png")
     plt.savefig(plot_path)
     plt.close(fig_act)
-    wandb_plots[f"clipped_actions_plot_{cmd_wandb_suffix}"] = plot_path
+    wandb_plots[f"plots/{cmd_filename_suffix}/clipped_actions_plot"] = plot_path # Hierarchical WandB key
 
     # --- Log all plots to WandB ---
     if args_cli.wandb:
@@ -591,10 +632,20 @@ def main():
     log_dir = None
 
     print(f"[INFO] Attempting to load checkpoint: {args_cli.checkpoint}")
-    resume_path = retrieve_file_path(args_cli.checkpoint) 
+
+    # Handle the case where user includes "mars_jumper/" prefix in the path  
+    checkpoint_path = args_cli.checkpoint
+    if checkpoint_path.startswith("mars_jumper/"):
+        # Try the path without the mars_jumper/ prefix first
+        checkpoint_path_without_prefix = checkpoint_path[len("mars_jumper/"):]
+        if os.path.exists(checkpoint_path_without_prefix):
+            checkpoint_path = checkpoint_path_without_prefix
+            print(f"[INFO] Removed 'mars_jumper/' prefix from checkpoint path. Using: {checkpoint_path}")
+
+    resume_path = retrieve_file_path(checkpoint_path) 
     
     if not resume_path or not os.path.exists(resume_path) or not os.path.isfile(resume_path):
-        print(f"[ERROR] Checkpoint path '{args_cli.checkpoint}' (resolved to '{resume_path}') is not a valid file or does not exist. Exiting.")
+        print(f"[ERROR] Checkpoint path '{checkpoint_path}' (resolved to '{resume_path}') is not a valid file or does not exist. Exiting.")
         return
     
     print(f"[INFO] Checkpoint found at: {resume_path}")
@@ -660,41 +711,125 @@ def main():
             args_cli.task, device=args_cli.device, num_envs=args_cli.num_envs, use_fabric=not args_cli.disable_fabric
         )
     
-    # Apply fixed command overrides if provided via CLI
-    if args_cli.cmd_magnitude is not None and args_cli.cmd_pitch is not None:
-        print(f"[INFO] Overriding command ranges with fixed magnitude: {args_cli.cmd_magnitude}, pitch: {args_cli.cmd_pitch}")
-        if hasattr(env_cfg, 'command_ranges') and env_cfg.command_ranges is not None:
-            env_cfg.command_ranges.magnitude_range = (args_cli.cmd_magnitude, args_cli.cmd_magnitude)
-            env_cfg.command_ranges.pitch_range = (args_cli.cmd_pitch, args_cli.cmd_pitch)
-        else:
-            print(f"[WARNING] env_cfg for task '{args_cli.task}' does not have 'command_ranges' or it is None. Cannot apply command overrides.")
+    # Apply initial pose overrides from CLI if the reset event exists
+    if hasattr(env_cfg, 'events') and hasattr(env_cfg.events, 'reset_robot_pose_with_feet_on_ground') and \
+       env_cfg.events.reset_robot_pose_with_feet_on_ground is not None and \
+       hasattr(env_cfg.events.reset_robot_pose_with_feet_on_ground, 'params'):
+        
+        reset_params = env_cfg.events.reset_robot_pose_with_feet_on_ground.params
+        
+        # Base Height
+        reset_params["base_height_range"] = (args_cli.base_height, args_cli.base_height)
+        print(f"[INFO] Overriding initial base_height_range to: ({args_cli.base_height}, {args_cli.base_height})")
+
+        # Base Pitch (convert degrees to radians)
+        base_pitch_rad = math.radians(args_cli.base_pitch)
+        reset_params["base_pitch_range_rad"] = (base_pitch_rad, base_pitch_rad)
+        print(f"[INFO] Overriding initial base_pitch_range_rad to: ({base_pitch_rad:.4f}, {base_pitch_rad:.4f}) rad")
+
+        # Front Feet Offset
+        reset_params["front_foot_x_offset_range_cm"] = (args_cli.front_feet_offset, args_cli.front_feet_offset)
+        print(f"[INFO] Overriding initial front_foot_x_offset_range_cm to: ({args_cli.front_feet_offset}, {args_cli.front_feet_offset}) cm")
+
+        # Hind Feet Offset
+        reset_params["hind_foot_x_offset_range_cm"] = (args_cli.hind_feet_offset, args_cli.hind_feet_offset)
+        print(f"[INFO] Overriding initial hind_foot_x_offset_range_cm to: ({args_cli.hind_feet_offset}, {args_cli.hind_feet_offset}) cm")
+    else:
+        print("[WARNING] Could not find 'reset_robot_pose_with_feet_on_ground' event or its params in env_cfg. Skipping initial pose overrides.")
+    
+    # Apply fixed command overrides from CLI (always applied since they have defaults)
+    print(f"[INFO] Setting command ranges with height: {args_cli.cmd_height}, length: {args_cli.cmd_length}")
+    if hasattr(env_cfg, 'command_ranges') and env_cfg.command_ranges is not None:
+        env_cfg.command_ranges.height_range = (args_cli.cmd_height, args_cli.cmd_height)
+        env_cfg.command_ranges.length_range = (args_cli.cmd_length, args_cli.cmd_length)
+    else:
+        print(f"[WARNING] env_cfg for task '{args_cli.task}' does not have 'command_ranges' or it is None. Cannot apply command overrides.")
 
     # Determine the actual command values used for this episode (either from CLI or defaults in env_cfg)
     actual_cmd_magnitude = 0.0
     actual_cmd_pitch = 0.0
+    actual_cmd_height = 0.0
+    actual_cmd_length = 0.0
     if hasattr(env_cfg, 'command_ranges') and env_cfg.command_ranges is not None:
-        if env_cfg.command_ranges.magnitude_range:
+        if env_cfg.command_ranges.height_range:
+            actual_cmd_height = env_cfg.command_ranges.height_range[0]
+        if env_cfg.command_ranges.length_range:
+            actual_cmd_length = env_cfg.command_ranges.length_range[0]
+        # Get calculated magnitude and pitch from the height/length ranges
+        if hasattr(env_cfg.command_ranges, 'magnitude_range') and env_cfg.command_ranges.magnitude_range:
             actual_cmd_magnitude = env_cfg.command_ranges.magnitude_range[0]
-        if env_cfg.command_ranges.pitch_range:
+        if hasattr(env_cfg.command_ranges, 'pitch_range') and env_cfg.command_ranges.pitch_range:
             actual_cmd_pitch = env_cfg.command_ranges.pitch_range[0]
     else:
         print(f"[WARNING] env_cfg for task '{args_cli.task}' does not have 'command_ranges' or it is None. Using 0.0 for command values.")
 
-    cmd_filename_suffix = "episode" 
-    cmd_wandb_suffix = ""
+    # --- Determine base output paths and ensure they exist ---
+    video_output_base_dir = os.path.join(log_dir, "videos", "play_single")
+    plots_output_base_dir = os.path.join(log_dir, "plots")
+    os.makedirs(video_output_base_dir, exist_ok=True)
+    os.makedirs(plots_output_base_dir, exist_ok=True)
+
+    # --- Find the next available run index ---
+    run_idx = 1
+    while True:
+        current_plot_dir_candidate = os.path.join(plots_output_base_dir, f"run_{run_idx}")
+        video_files_exist_for_idx = False
+        if os.path.isdir(video_output_base_dir):
+            for fname in os.listdir(video_output_base_dir):
+                # Only check for .mp4 files, not _params.json for videos
+                if fname.startswith(f"run_{run_idx}_") and fname.endswith(".mp4"):
+                    video_files_exist_for_idx = True
+                    break
+        
+        # A run index is considered used if its plot directory exists OR a video file for that index exists.
+        if os.path.exists(current_plot_dir_candidate) or video_files_exist_for_idx:
+            run_idx += 1
+        else:
+            break
+    
+    cmd_filename_suffix = f"run_{run_idx}" # e.g., "run_1"
+    cmd_wandb_suffix = f"_{cmd_filename_suffix}" # e.g., "_run_1"
+
+    # --- Prepare run parameters dictionary ---
+    run_params_dict = {
+        "run_index": run_idx,
+        "task": args_cli.task,
+        "checkpoint": os.path.abspath(resume_path),
+        # Command values (always from CLI, either explicit or default)
+        "command_height": actual_cmd_height,
+        "command_length": actual_cmd_length,
+        "command_magnitude": actual_cmd_magnitude,
+        "command_pitch_rad": actual_cmd_pitch,
+        "command_pitch_deg": math.degrees(actual_cmd_pitch),
+        # Initial robot pose (always from CLI, either explicit or default)
+        "initial_base_height": args_cli.base_height,
+        "initial_base_pitch_deg": args_cli.base_pitch,
+        "initial_front_feet_offset_cm": args_cli.front_feet_offset,
+        "initial_hind_feet_offset_cm": args_cli.hind_feet_offset,
+    }
+    
+    # Note: Removed calculated ranges since we only use fixed command values
+
+    # --- Setup plot directory and save plot run_params.json ---
+    run_specific_plots_dir = os.path.join(plots_output_base_dir, cmd_filename_suffix)
+    if os.path.exists(run_specific_plots_dir):
+        print(f"[INFO] Removing existing plots sub-directory for this run index: {run_specific_plots_dir}")
+        shutil.rmtree(run_specific_plots_dir)
+    os.makedirs(run_specific_plots_dir, exist_ok=True)
+    
+    plot_params_path = os.path.join(run_specific_plots_dir, "run_params.json")
+    with open(plot_params_path, 'w') as f:
+        json.dump(run_params_dict, f, indent=4)
+    print(f"[INFO] Saved plot run parameters to: {plot_params_path}")
+
+    # --- Save video run_params.json --- (REMOVED)
+    # video_params_path = os.path.join(video_output_base_dir, f"{cmd_filename_suffix}_params.json")
+    # with open(video_params_path, 'w') as f:
+    #     json.dump(run_params_dict, f, indent=4)
+    # print(f"[INFO] Saved video run parameters to: {video_params_path}")
     
     # Ensure log_dir is defined for operations below like video/plot saving
     # If log_dir determination failed earlier (e.g. bad resume_path), script would have exited.
-    # So, log_dir should be valid here if we reached this point.
-    # os.makedirs(log_dir, exist_ok=True) # Ensure it exists, though it should if derived from valid checkpoint
-
-    # --- Clear existing plots directory ---
-    plots_dir = os.path.join(log_dir, "plots")
-    if os.path.exists(plots_dir):
-        print(f"[INFO] Removing existing plots directory: {plots_dir}")
-        shutil.rmtree(plots_dir)
-    # We don't need to recreate it here, as plot_episode_data will do it.
-    # os.makedirs(plots_dir, exist_ok=True) 
 
     # wrap around environment for rl-games
     rl_device = agent_cfg["params"]["config"]["device"]
@@ -712,14 +847,14 @@ def main():
     if args_cli.video:
         video_folder = os.path.join(log_dir, "videos", "play_single")
         # Delete existing video folder to ensure a new one is created
-        if os.path.exists(video_folder):
-            shutil.rmtree(video_folder)
+        # if os.path.exists(video_folder):
+        #     shutil.rmtree(video_folder) # Keep previous videos from other runs
         # Ensure the base directory exists
         os.makedirs(video_folder, exist_ok=True)
 
         video_kwargs = {
             "video_folder": video_folder,
-            "name_prefix": f"{cmd_filename_suffix}_",
+            "name_prefix": f"{cmd_filename_suffix}_", # Use the unique suffix
             "step_trigger": lambda step: step == 0,
             "video_length": int(env.unwrapped.max_episode_length),
             "disable_logger": True,
@@ -765,6 +900,7 @@ def main():
     episode_target_positions = []
     episode_com_lin_vel = []
     episode_base_height = []
+    episode_base_x_pos = []  # Add COM x-position tracking
     episode_jump_phase = []
     episode_feet_off_ground = []
     episode_takeoff_toggle = []
@@ -801,8 +937,10 @@ def main():
                 episode_target_positions.append(target_positions)
                 current_com_vel = get_center_of_mass_lin_vel(env.unwrapped).squeeze(0) # Squeeze batch dim
                 current_base_height = env.unwrapped.robot.data.root_pos_w[:, 2].squeeze(0) # Squeeze batch dim
+                current_base_x_pos = env.unwrapped.robot.data.root_pos_w[:, 0].squeeze(0)  # Squeeze batch dim
                 episode_com_lin_vel.append(current_com_vel.clone())
                 episode_base_height.append(current_base_height.clone())
+                episode_base_x_pos.append(current_base_x_pos.clone())
                 current_jump_phase = env.unwrapped.jump_phase.clone().squeeze(0) # Squeeze batch dim
                 episode_jump_phase.append(current_jump_phase.clone())
                 current_feet_off_ground = all_feet_off_the_ground(env.unwrapped).squeeze(0) # Squeeze batch dim
@@ -852,7 +990,7 @@ def main():
             wandb.init(id=run_id, project=run_project, resume="must")
             
             if args_cli.video:
-                save_video_to_wandb(video_folder, log_dir, run_id, run_project, dt, cmd_wandb_suffix="") 
+                save_video_to_wandb(video_folder, log_dir, run_id, run_project, dt, cmd_wandb_suffix, cmd_filename_suffix) 
 
         if args_cli.plot:
             print("[INFO] Preparing to plot data...") # Add print statement
@@ -866,6 +1004,7 @@ def main():
                                           joint_torques=episode_joint_torques, 
                                           com_lin_vel=episode_com_lin_vel,
                                           base_height=episode_base_height,
+                                          base_x_pos=episode_base_x_pos,
                                           jump_phase=episode_jump_phase,
                                           feet_off_ground=episode_feet_off_ground,
                                           dt=dt, # Use stored dt 
@@ -874,6 +1013,8 @@ def main():
                                           cmd_wandb_suffix=cmd_wandb_suffix,
                                           actual_cmd_magnitude=actual_cmd_magnitude,
                                           actual_cmd_pitch=actual_cmd_pitch,
+                                          actual_cmd_height=actual_cmd_height,
+                                          actual_cmd_length=actual_cmd_length,
                                           episode_any_feet_on_ground=episode_any_feet_on_ground,
                                           episode_takeoff_toggle=episode_takeoff_toggle,
                                           episode_contact_forces=episode_contact_forces,
@@ -883,10 +1024,10 @@ def main():
         if args_cli.wandb:
             wandb.finish()
             
-def save_video_to_wandb(video_folder, log_dir, run_id, run_project, dt, cmd_wandb_suffix):
+def save_video_to_wandb(video_folder, log_dir, run_id, run_project, dt, cmd_wandb_suffix, video_name_prefix_for_glob):
     print(f"Logging video to WandB run id: {run_id} in project: {run_project}")
     import glob
-    video_name_pattern_prefix = "episode" # Consistent with main's cmd_filename_suffix for this case
+    video_name_pattern_prefix = video_name_prefix_for_glob # Use the passed prefix
     video_files = glob.glob(os.path.join(video_folder, f"{video_name_pattern_prefix}_*.mp4"))
     if not video_files:
         print(f"No video files found in {video_folder} matching pattern '{video_name_pattern_prefix}_*.mp4'")

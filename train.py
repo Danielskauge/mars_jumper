@@ -230,6 +230,11 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 command_ranges_dict = class_to_dict(env_cfg.command_ranges)
                 run.config.update({"command_ranges": command_ranges_dict}, allow_val_change=True) # Log command ranges
 
+            # Log event parameters for reset_robot_pose_with_feet_on_ground
+            if hasattr(env_cfg, "events") and hasattr(env_cfg.events, "reset_robot_pose_with_feet_on_ground"):
+                reset_params = class_to_dict(env_cfg.events.reset_robot_pose_with_feet_on_ground.params)
+                run.config.update({"reset_robot_pose_params": reset_params}, allow_val_change=True)
+
             run.config.update(agent_cfg["params"]["config"], allow_val_change=True) # Allow changes from sweep
             run.config.update({"sim_freq": int(1/env_cfg.sim.dt)})
             run.config.update({"real_time_control_dt": int(1/env_cfg.real_time_control_dt)})

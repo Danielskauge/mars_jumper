@@ -116,6 +116,37 @@ def bad_yaw(
     yaw = env.robot.data.heading_w
     return torch.logical_and(torch.abs(yaw) > limit_angle, phase_match)
 
+def bad_roll(
+    env: ManagerBasedRLEnv,
+    limit_angle: float = np.pi/4,
+    phases: list[Phase] = [Phase.TAKEOFF, Phase.FLIGHT, Phase.LANDING]
+) -> torch.Tensor:
+    """Terminate when the robot's roll angle exceeds the limit in specified phases.
+    
+    Args:
+        env: The RL environment.
+        limit_angle: Maximum allowed roll angle in radians.
+        phases: List of phases where this termination applies.
+    
+    Returns:
+        Boolean tensor indicating which environments should terminate due to excessive roll.
+    """
+    # Check if the current phase for each environment is in the allowed phases
+    phase_match = torch.zeros_like(env.jump_phase, dtype=torch.bool)
+    for phase in phases:
+        phase_match = torch.logical_or(phase_match, env.jump_phase == phase)
+    
+    # Calculate roll angle from projected gravity
+    # Roll is rotation around forward (x) axis
+    # In base frame: gravity_y and gravity_z components give us roll
+    gravity_proj = env.robot.data.projected_gravity_b
+    roll_angle = torch.atan2(gravity_proj[:, 1], -gravity_proj[:, 2])
+    
+    # Check if roll exceeds limit
+    roll_bad = torch.abs(roll_angle) > limit_angle
+    
+    return torch.logical_and(roll_bad, phase_match)
+
 def self_collision(
     env: ManagerBasedRLEnv,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
