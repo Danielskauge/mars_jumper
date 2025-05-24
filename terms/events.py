@@ -275,6 +275,7 @@ def reset_robot_pose_with_feet_on_ground(env: ManagerBasedRLEnv,
                              base_pitch_range_rad: Tuple[float, float],
                              front_foot_x_offset_range_cm: Tuple[float, float],
                              hind_foot_x_offset_range_cm: Tuple[float, float],
+                             base_vertical_vel_range: Tuple[float, float] = (0.0, 0.0),
                              ) -> None:
     
     # # Base pose (position x, y are from default, z is sampled height)
@@ -290,12 +291,16 @@ def reset_robot_pose_with_feet_on_ground(env: ManagerBasedRLEnv,
                                                             )
     base_quat_w = quat_from_euler_xyz(torch.zeros_like(base_pitch), base_pitch, torch.zeros_like(base_pitch))
     
+    # Sample base vertical velocity
+    base_z_vel = math_utils.sample_uniform(*base_vertical_vel_range, (len(env_ids),), device=env.device)
+    
     root_state = env.robot.data.default_root_state[env_ids].clone() 
     root_state[:, :2] = env.scene.env_origins[env_ids, :2] + env.robot.data.default_root_state[env_ids, :2]
 
     root_state[:, 2] = base_height
     root_state[:, 3:7] = base_quat_w
     root_state[:, 7:] = 0.0  # Zero linear and angular velocities
+    root_state[:, 9] = base_z_vel  # Set base vertical velocity (z-component)
     
     joint_pos = env.robot.data.default_joint_pos[env_ids].clone()
 

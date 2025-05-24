@@ -34,10 +34,13 @@ class MetricsBucketingCfg:
 @configclass
 class CommandRangesCfg:
     # New primary interface: heighte and length ranges
+    # Pitch 45deg from vertical is equivalent to H = 0.25L, which is the shallowest jump within the friction cone for a friction coefficient of 1. Thus <45deg might be optimal.
+
+    min_target_length = 0.5  # m  
+    max_target_length = 0.6  # m
+
     min_target_height = 0.2  # m
     max_target_height = 0.5  # m
-    min_target_length = 0.0  # m  
-    max_target_length = 0.5  # m
     
     height_range: Tuple[float, float] = (min_target_height, max_target_height)
     length_range: Tuple[float, float] = (min_target_length, max_target_length)
@@ -101,10 +104,11 @@ class CommandRangesCfg:
 class EventCfg:
     reset_scene_to_default = EventTermCfg(func=mdp.reset_scene_to_default, mode="reset")
     reset_robot_pose_with_feet_on_ground = EventTermCfg(func=events.reset_robot_pose_with_feet_on_ground, mode="reset", params={
-        "base_height_range": (0.06, 0.10), # (0.06, 0.12),
-        "base_pitch_range_rad": (0*DEG2RAD, 30*DEG2RAD), #(-5*DEG2RAD, 20*DEG2RAD),
-        "front_foot_x_offset_range_cm": (-4, 4), #(-3, 3),
-        "hind_foot_x_offset_range_cm": (-4, 4) #(-4, 1)
+        "base_height_range": (0.08, 0.08), # Increased range from (0.05, 0.015) to allow deeper crouch
+        "base_pitch_range_rad": (15*DEG2RAD, 15*DEG2RAD), # Restored wider range for more variety
+        "front_foot_x_offset_range_cm": (0, 0), # Restored some variation from (0, 0)
+        "hind_foot_x_offset_range_cm": (0, 0), # Restored variation from (0, 0)
+        "base_vertical_vel_range": (-0, 0),  # Range for sampling base vertical velocity in m/s
     })
 @configclass
 class RewardsCfg:
@@ -158,19 +162,19 @@ class RewardsCfg:
     
     attitude_error_on_way_down = RewardTermCfg(func=rewards.attitude_error_on_way_down, 
                                               params={"scale": 5.0},
-                                              weight=0.7)
+                                              weight=0.5)
     
     attitude_rotation_flight = RewardTermCfg(func=rewards.attitude_rotation_magnitude, 
                                       params={"kernel": "inverse_quadratic", 
                                               "scale": 5.0,
                                               "phases": [Phase.FLIGHT]},
-                                      weight=0.07)
+                                      weight=0.05)
     
-    attitude_landing = RewardTermCfg(func=rewards.attitude_rotation_magnitude, 
-                                      params={"kernel": "inverse_quadratic", 
-                                              "scale": 11.0,
-                                              "phases": [Phase.LANDING]},
-                                      weight=0.5)
+    # attitude_landing = RewardTermCfg(func=rewards.attitude_rotation_magnitude, 
+    #                                   params={"kernel": "inverse_quadratic", 
+    #                                           "scale": 11.0,
+    #                                           "phases": [Phase.LANDING]},
+    #                                   weight=0.5)
     
     # landing_foot_ground_contact = RewardTermCfg(func=rewards.landing_foot_ground_contact,
     #                                             weight=0.1)
@@ -188,6 +192,7 @@ class RewardsCfg:
                                                                                                  "bad_yaw_flight",
                                                                                                  "bad_roll_takeoff",
                                                                                                  "bad_roll_flight",
+                                                                                                 "failed_to_reach_target_height",
                                                                                                  #"takeoff_timeout",
                                                                                                  #"walking"
                                                                                                  ]})
@@ -214,11 +219,11 @@ class RewardsCfg:
     #                                          )
     
     # # Standing/landing foot positioning rewards
-    feet_near_ground = RewardTermCfg(func=rewards.feet_near_ground_reward,
-                                     params={"height_threshold": 0.02,  # 2cm threshold
-                                             "ground_height": 0.0,       # Assuming flat ground at z=0
-                                             "phases": [Phase.LANDING]},
-                                     weight=0.1)
+    # feet_near_ground = RewardTermCfg(func=rewards.feet_near_ground_reward,
+    #                                  params={"height_threshold": 0.02,  # 2cm threshold
+    #                                          "ground_height": 0.0,       # Assuming flat ground at z=0
+    #                                          "phases": [Phase.LANDING]},
+    #                                  weight=0.1)
     
     # # Alternative penalty approach for foot height
     # feet_height_penalty = RewardTermCfg(func=rewards.feet_height_penalty,
@@ -253,6 +258,9 @@ class TerminationsCfg:
                                                                               "phases": [Phase.TAKEOFF]})
     bad_roll_flight = TerminationTermCfg(func=terminations.bad_roll, params={"limit_angle": np.pi/4,
                                                                              "phases": [Phase.FLIGHT]})
+    
+    failed_to_reach_target_height = TerminationTermCfg(func=terminations.failed_to_reach_target_height, 
+                                                       params={"height_threshold": 0.10})
     
     #takeoff_timeout = TerminationTermCfg(func=terminations.takeoff_timeout, params={"timeout": 0.5})
     walking = TerminationTermCfg(func=terminations.walking)

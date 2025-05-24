@@ -24,7 +24,7 @@ def update_jump_phase(
     com_vel_magnitude = torch.norm(com_vel, dim=-1)
     env.prev_jump_phase = env.jump_phase.clone()
     
-    vel_not_increasing = com_vel_magnitude < env.max_takeoff_vel_magnitude - 0.1 #add margin for numerical errors and small variations
+    vel_not_increasing = com_vel_magnitude < env.metrics.max_takeoff_vel_magnitude - 0.1 #add margin for numerical errors and small variations
     
     height_condition = get_center_of_mass_pos(env)[:, 2] > 0.2
     vel_condition = vel_not_increasing & (com_vel_magnitude > 0.5)

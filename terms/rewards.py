@@ -48,7 +48,7 @@ def shifted_huber_kernel(e, delta, e_max):
     Returns:
         Reward values where:
         - e=0 gives maximum reward
-        - e=e_max gives reward=0
+        - e=e_max gives reward=0, negative beyond that. This controls steepness of the reward curve.
         - Transition from quadratic to linear penalty at e=delta
         
     Note: Use the 'weight' parameter in RewardTermCfg to scale the magnitude
@@ -616,94 +616,6 @@ def feet_ground_impact_force(env: ManagerBasedRLEnv) -> torch.Tensor:
     
     return reward_tensor
     
-def crouch_knee_angle(env: ManagerBasedRLEnv, target_angle_rad: float, reward_type: str = "cosine") -> torch.Tensor:
-    """ Reward knee angles similar to the target angle to load springs. Use positive weight, for all reward types.
-    Args:
-        target_angle_rad: The target knee angle in radians, [0, pi], (should be near 0 pi for full flexing)
-        reward_type: "cosine" or "absolute" or "square"
-    Returns:
-        reward_tensor: Shape (num_envs,), bouded [0, 1]
-    """
-    reward_tensor = torch.zeros(env.num_envs, device=env.device)
-    
-    crouch_envs = env.jump_phase == Phase.CROUCH
-    knee_joints_idx, _ = env.robot.find_joints(".*KFE")
-    
-    angle_rad = env.robot.data.joint_pos[crouch_envs, :][:, torch.tensor(knee_joints_idx)]
-    angle_diff_abs = torch.abs(angle_rad - target_angle_rad)
-    angle_diff_abs_normalized = angle_diff_abs / torch.pi  # normalize to 0-1, max error is pi
-    
-    if reward_type == "cosine":
-        cosine_similarity = (torch.cos(angle_diff_abs) + 1) / 2
-        reward_tensor[crouch_envs] = torch.sum(cosine_similarity, dim=-1) / 4
-    
-    elif reward_type == "absolute":
-        reward_tensor[crouch_envs] = -torch.sum(angle_diff_abs_normalized, dim=-1) / 4
-        print(reward_tensor[crouch_envs])
-        
-    elif reward_type == "square":
-        reward_tensor[crouch_envs] = -torch.sum(torch.square(angle_diff_abs_normalized), dim=-1) / 4
-    
-    return reward_tensor
-
-def crouch_hip_angle(env: ManagerBasedRLEnv, target_angle_rad: float, reward_type: str = "cosine") -> torch.Tensor:
-    """ Reward hip angles similar to the target angle to load springs. Use positive weight, for all reward types.  
-    Args:
-        target_angle_rad: The target angle in radians, [0, pi], (should be near 0 pi for full flexing)
-        reward_type: "cosine" or "absolute" or "square"
-    Returns:
-        reward_tensor: Shape (num_envs,), bouded [0, 1]
-    """
-    reward_tensor = torch.zeros(env.num_envs, device=env.device)
-    
-    crouch_envs = env.jump_phase == Phase.CROUCH
-    hip_joints_idx, _ = env.robot.find_joints(".*HFE.*")
-    
-    angle_rad = env.robot.data.joint_pos[crouch_envs, :][:, torch.tensor(hip_joints_idx)]
-    angle_diff_abs= torch.abs(angle_rad - target_angle_rad)
-    angle_diff_abs_normalized = angle_diff_abs / torch.pi #normalize to 0-1, max error is pi
-    
-    if reward_type == "cosine":
-        cosine_similarity = (torch.cos(angle_diff_abs) + 1) / 2
-        reward_tensor[crouch_envs] = torch.mean(cosine_similarity, dim=-1)
-
-    elif reward_type == "absolute":
-        reward_tensor[crouch_envs] = -torch.mean(angle_diff_abs_normalized, dim=-1)
-        
-    elif reward_type == "square":
-        reward_tensor[crouch_envs] = -torch.mean(torch.square(angle_diff_abs_normalized), dim=-1) 
-    
-    return reward_tensor
-
-def crouch_abductor_angle(env: ManagerBasedRLEnv, target_angle_rad: float, reward_type: str = "cosine") -> torch.Tensor:
-    """ Reward abductor angles similar to the target angle to load springs. Use positive weight, for all reward types.
-    Args:
-        target_angle_rad: The target abductor angle in radians, [0, pi], (should be near 0 pi for full flexing)
-        reward_type: "cosine" or "absolute" or "square"
-    Returns:
-        reward_tensor: Shape (num_envs,), bouded [0, 1]
-    """
-    reward_tensor = torch.zeros(env.num_envs, device=env.device)
-    
-    crouch_envs = env.jump_phase == Phase.CROUCH
-    abductor_joints_idx, _ = env.robot.find_joints(".*HAA.*")
-    
-    angle_rad = env.robot.data.joint_pos[crouch_envs, :][:, torch.tensor(abductor_joints_idx)]
-    angle_diff_abs = torch.abs(angle_rad - target_angle_rad)
-    angle_diff_abs_normalized = angle_diff_abs / torch.pi  # normalize to 0-1, max error is pi
-    
-    if reward_type == "cosine":
-        cosine_similarity = (torch.cos(angle_diff_abs) + 1) / 2
-        reward_tensor[crouch_envs] = torch.sum(cosine_similarity, dim=-1) / 4
-    
-    elif reward_type == "absolute":
-        reward_tensor[crouch_envs] = -torch.sum(angle_diff_abs_normalized, dim=-1) / 4
-        
-    elif reward_type == "square":
-        reward_tensor[crouch_envs] = -torch.sum(torch.square(angle_diff_abs_normalized), dim=-1) / 4
-    
-    return reward_tensor
-        
 def takeoff_angle_error(env: ManagerBasedRLEnv, scale: float | int = 1.0) -> torch.Tensor:
     """Rewards for small velocity vector angular misalignment during takeoff phase.
 
@@ -747,62 +659,6 @@ def takeoff_angle_error(env: ManagerBasedRLEnv, scale: float | int = 1.0) -> tor
     # Assign back to the global reward tensor
     reward[takeoff_mask] = scaled_err
     return reward
-
-def upward_velocity(env: ManagerBasedRLEnv, shape: str = "linear") -> torch.Tensor:
-    """Reward upward velocity of the base, but only during the takeoff phase."""
-    takeoff_envs = env.jump_phase == Phase.TAKEOFF # Use env.jump_phase
-    
-    reward = torch.zeros(env.num_envs, device=env.device)
-    
-    # Only calculate and apply reward for environments in the takeoff phase
-    if torch.any(takeoff_envs):
-        # Extract upward velocity component for active environments
-        upward_vel = env.robot.data.root_com_lin_vel_w[takeoff_envs, 2]
-        # Apply reward where velocity is positive
-        reward[takeoff_envs] = torch.clamp(upward_vel, min=0.0)
-        
-        if shape == "square":
-            reward[takeoff_envs] = torch.square(reward[takeoff_envs])
-       
-    return reward
-
-def landing_orientation(
-    env: ManagerBasedRLEnv, target_orientation_quat: torch.Tensor, actual_orientation_quat: torch.Tensor
-) -> torch.Tensor:
-    """ Difference between the commanded and actual landing orientation measured by quaternion logarithm
-    
-    Args:
-        target_orientation_quat: Shape (num_envs, 4)
-        actual_orientation_quat: Shape (num_envs, 4)
-    """
-    
-    assert torch.all(torch.isclose(torch.norm(target_orientation_quat, dim=-1), torch.ones_like(torch.norm(target_orientation_quat, dim=-1)))), "Target orientation quaternion must be normalized"
-    assert torch.all(torch.isclose(torch.norm(actual_orientation_quat, dim=-1), torch.ones_like(torch.norm(actual_orientation_quat, dim=-1)))), "Actual orientation quaternion must be normalized"
-
-    def quat_mul(q1, q2):
-        w1, x1, y1, z1 = q1.unbind(-1)
-        w2, x2, y2, z2 = q2.unbind(-1)
-        return torch.stack([
-            w1*w2 - x1*x2 - y1*y2 - z1*z2,
-            w1*x2 + x1*w2 + y1*z2 - z1*y2,
-            w1*y2 - x1*z2 + y1*w2 + z1*x2,
-            w1*z2 + x1*y2 - y1*x2 + z1*w2
-        ], dim=-1)
-
-    target_conj = torch.cat([target_orientation_quat[:, :1], -target_orientation_quat[:, 1:]], dim=-1)
-    q_rel = quat_mul(actual_orientation_quat, target_conj)
-    
-    assert torch.all(torch.isclose(torch.norm(q_rel, dim=-1), torch.ones_like(q_rel[:, 0]))), "Relative quaternion must be normalized"
-    
-    scalar_part = q_rel[:, 0]
-    vector_part = q_rel[:, 1:]
-    
-    angle = torch.acos(torch.clamp(scalar_part, min=-1.0, max=1.0)).unsqueeze(-1)
-    vector_norm = torch.norm(vector_part, dim=-1).unsqueeze(-1)
-    log_q = torch.where(vector_norm > 1e-6, angle * (vector_part / vector_norm), torch.zeros_like(vector_part))
-    
-    return log_q #TODO check if this is correct
-
 
 def feet_air_time(
     env: ManagerBasedRLEnv, command_name: str, sensor_cfg: SceneEntityCfg, threshold: float

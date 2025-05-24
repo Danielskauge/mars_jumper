@@ -6,6 +6,7 @@ from isaaclab.assets import RigidObject
 from isaaclab.assets.articulation.articulation import Articulation
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.sensors import ContactSensor
+from terms.utils import get_center_of_mass_lin_vel
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
 from terms.phase import Phase
@@ -182,6 +183,24 @@ def landed(
     """Terminate when the robot lands on the ground."""
     #TODO: this uses the phase defintion of when to start to land, not the same as landing in terms of touch down
     return env.jump_phase == Phase.LANDING
+
+def failed_to_reach_target_height(
+    env: ManagerBasedRLEnv,
+    height_threshold: float = 0.10,  # 10cm threshold
+) -> torch.Tensor:
+    """Terminate when robot is in flight phase and descending without reaching within threshold of target height.
+    
+    Args:
+        env: The RL environment.
+        height_threshold: Threshold in meters below target height (default 0.10m = 10cm).
+    
+    Returns:
+        Boolean tensor indicating which environments should terminate due to failed height reach.
+    """
+    in_flight_phase = env.jump_phase == Phase.FLIGHT
+    is_descending = get_center_of_mass_lin_vel(env)[:, 2] < 0.1
+    height_error = env.target_height - env.metrics.max_height_achieved
+    return in_flight_phase & is_descending & (height_error > height_threshold)
     
 def entered_flight(
     env: ManagerBasedRLEnv,

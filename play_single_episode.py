@@ -8,6 +8,7 @@ import wandb
 import yaml
 from isaaclab.app import AppLauncher
 from omegaconf import OmegaConf
+import glob # Added import for checkpoint searching
 
 parser = argparse.ArgumentParser(description="Play a checkpoint of an RL agent from RL-Games for a single episode.")
 parser.add_argument("--cmd_height", type=float, default=0.3, help="Fixed command height (default: 0.3m).")
@@ -612,6 +613,72 @@ def plot_episode_data(robot,
         else:
             print("[Warning] No valid plot paths found to log to WandB.")
 
+def find_checkpoint_with_date_support(checkpoint_path, task_name=None):
+    """
+    Find checkpoint file supporting both old and new (date-organized) log structures.
+    
+    Two formats:
+    1. Old: logs/rl_games/mars_jumper/run_name/nn/mars_jumper.pth
+    2. New: logs/rl_games/mars_jumper/day_folder/run_name/nn/mars_jumper.pth
+    
+    Args:
+        checkpoint_path: User-provided checkpoint path
+        task_name: Task name for fallback search (optional)
+    
+    Returns:
+        tuple: (found_checkpoint_path, log_dir) or (None, None) if not found
+    """
+    print(f"[INFO] Searching for checkpoint: {checkpoint_path}")
+    
+    # Handle mars_jumper/ prefix removal
+    if checkpoint_path.startswith("mars_jumper/"):
+        checkpoint_path = checkpoint_path[len("mars_jumper/"):]
+        print(f"[INFO] Removed 'mars_jumper/' prefix. Using: {checkpoint_path}")
+    
+    # Try 1: Use the path directly (handles full paths and direct access)
+    resume_path = retrieve_file_path(checkpoint_path)
+    if resume_path and os.path.exists(resume_path) and os.path.isfile(resume_path):
+        log_dir = os.path.dirname(os.path.dirname(resume_path))
+        print(f"[INFO] Found checkpoint using direct path: {resume_path}")
+        return resume_path, log_dir
+    
+    # Try 2: If path exists directly
+    if os.path.exists(checkpoint_path) and os.path.isfile(checkpoint_path):
+        log_dir = os.path.dirname(os.path.dirname(checkpoint_path))
+        print(f"[INFO] Found checkpoint at: {checkpoint_path}")
+        return checkpoint_path, log_dir
+    
+    # Try 3: Search in date-organized structure
+    # If it looks like old format, search for it in date folders
+    base_logs_dir = "logs/rl_games/mars_jumper"
+    
+    if os.path.exists(base_logs_dir):
+        print(f"[INFO] Searching in date-organized structure: {base_logs_dir}")
+        
+        # Get just the filename to search for
+        if "/" in checkpoint_path:
+            checkpoint_filename = os.path.basename(checkpoint_path)
+        else:
+            checkpoint_filename = checkpoint_path
+        
+        # Search through all date folders for the checkpoint
+        import glob
+        search_pattern = os.path.join(base_logs_dir, "*", "*", "nn", checkpoint_filename)
+        matches = glob.glob(search_pattern)
+        
+        if matches:
+            # Sort by modification time, use most recent
+            matches.sort(key=os.path.getmtime, reverse=True)
+            found_path = matches[0]
+            log_dir = os.path.dirname(os.path.dirname(found_path))
+            print(f"[INFO] Found checkpoint in date-organized structure: {found_path}")
+            if len(matches) > 1:
+                print(f"[INFO] Multiple matches found, using most recent")
+            return found_path, log_dir
+    
+    print(f"[ERROR] Could not find checkpoint: {checkpoint_path}")
+    return None, None
+
 def main():
     """Play with RL-Games agent for a single episode."""
     # Check if checkpoint is provided
@@ -622,42 +689,20 @@ def main():
     # agent_cfg must be loaded first to get log_root_path if needed for checkpoint search
     agent_cfg = load_cfg_from_registry(args_cli.task, "rl_games_cfg_entry_point")
 
-    # specify directory for logging experiments (used as a base if checkpoint path is relative, or for fallbacks)
-    # log_root_path = os.path.join("logs", "rl_games", agent_cfg["params"]["config"]["name"])
-    # log_root_path = os.path.abspath(log_root_path)
-    # print(f"[INFO] Base log directory: {log_root_path}") # For debugging path logic
-    
-    # find checkpoint and define log_dir and env_yaml_path
-    env_yaml_path = None 
-    log_dir = None
-
+    # Find checkpoint using the new function that supports date-organized logs
     print(f"[INFO] Attempting to load checkpoint: {args_cli.checkpoint}")
-
-    # Handle the case where user includes "mars_jumper/" prefix in the path  
-    checkpoint_path = args_cli.checkpoint
-    if checkpoint_path.startswith("mars_jumper/"):
-        # Try the path without the mars_jumper/ prefix first
-        checkpoint_path_without_prefix = checkpoint_path[len("mars_jumper/"):]
-        if os.path.exists(checkpoint_path_without_prefix):
-            checkpoint_path = checkpoint_path_without_prefix
-            print(f"[INFO] Removed 'mars_jumper/' prefix from checkpoint path. Using: {checkpoint_path}")
-
-    resume_path = retrieve_file_path(checkpoint_path) 
+    resume_path, log_dir = find_checkpoint_with_date_support(args_cli.checkpoint, args_cli.task)
     
-    if not resume_path or not os.path.exists(resume_path) or not os.path.isfile(resume_path):
-        print(f"[ERROR] Checkpoint path '{checkpoint_path}' (resolved to '{resume_path}') is not a valid file or does not exist. Exiting.")
+    if not resume_path or not log_dir:
+        print(f"[ERROR] Could not find checkpoint: {args_cli.checkpoint}. Exiting.")
         return
     
     print(f"[INFO] Checkpoint found at: {resume_path}")
-    try:
-        log_dir = os.path.dirname(os.path.dirname(resume_path))
-        env_yaml_path = os.path.join(log_dir, "params", "env.yaml")
-        print(f"[INFO] Deduced log directory: {log_dir}")
-        print(f"[INFO] Expected env.yaml path: {env_yaml_path}")
-    except Exception as e:
-        print(f"[ERROR] Could not determine log_dir or env.yaml path from resume_path '{resume_path}': {e}. Exiting.")
-        return
-
+    print(f"[INFO] Deduced log directory: {log_dir}")
+    
+    # Determine env.yaml path
+    env_yaml_path = os.path.join(log_dir, "params", "env.yaml")
+    print(f"[INFO] Expected env.yaml path: {env_yaml_path}")
 
     # Now, load or parse env_cfg
     if env_yaml_path and os.path.exists(env_yaml_path):
