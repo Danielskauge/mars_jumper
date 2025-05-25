@@ -11,8 +11,8 @@ from omegaconf import OmegaConf
 import glob # Added import for checkpoint searching
 
 parser = argparse.ArgumentParser(description="Play a checkpoint of an RL agent from RL-Games for a single episode.")
-parser.add_argument("--cmd_height", type=float, default=0.3, help="Fixed command height (default: 0.3m).")
-parser.add_argument("--cmd_length", type=float, default=0.0, help="Fixed command length (default: 0.0m).")
+parser.add_argument("--cmd_height", type=float, default=0.4, help="Fixed command height (default: 0.3m).")
+parser.add_argument("--cmd_length", type=float, default=0.4, help="Fixed command length (default: 0.0m).")
 parser.add_argument("--wandb", action="store_true", default=False, help="Log video and plots to WandB.")
 parser.add_argument(
     "--disable_fabric", action="store_true", default=False, help="Disable fabric and use USD I/O operations."
@@ -26,7 +26,7 @@ AppLauncher.add_app_launcher_args(parser)
 
 # Add new arguments for initial pose
 parser.add_argument("--base_height", type=float, default=0.08, help="Initial base height of the robot (meters). Default: 0.08m.")
-parser.add_argument("--base_pitch", type=float, default=0.0, help="Initial base pitch of the robot (degrees). Default: 0.0deg.")
+parser.add_argument("--base_pitch", type=float, default=15.0, help="Initial base pitch of the robot (degrees). Default: 0.0deg.")
 parser.add_argument("--front_feet_offset", type=float, default=0.0, help="Initial front feet x-offset relative to hip (cm). Default: 0.0cm.")
 parser.add_argument("--hind_feet_offset", type=float, default=0.0, help="Initial hind feet x-offset relative to hip (cm). Default: 0.0cm.")
 
@@ -58,10 +58,8 @@ from rl_games.torch_runner import Runner
 from isaaclab.envs import DirectMARLEnv, multi_agent_to_single_agent
 from isaaclab.utils.assets import retrieve_file_path
 from isaaclab.utils.dict import print_dict
-from isaaclab.sensors.contact_sensor import ContactSensor # Import ContactSensor
-from isaaclab_tasks.utils import get_checkpoint_path, load_cfg_from_registry, parse_env_cfg
-from terms.utils import get_center_of_mass_lin_vel, all_feet_off_the_ground, any_feet_on_the_ground
-from terms.phase import Phase # Import Phase enum
+from isaaclab_tasks.utils import load_cfg_from_registry, parse_env_cfg
+from terms.utils import Phase, all_feet_off_the_ground, any_feet_on_the_ground, convert_height_length_to_pitch_magnitude_from_position # Updated imports
 from terms.observations import has_taken_off
 
 def plot_episode_data(robot, 
@@ -87,7 +85,9 @@ def plot_episode_data(robot,
                       episode_takeoff_toggle, 
                       episode_contact_forces, 
                       episode_rewards,
-                      episode_all_body_heights):
+                      episode_all_body_heights,
+                      episode_dynamic_cmd_pitch, # Add new parameter
+                      episode_dynamic_cmd_magnitude): # Add new parameter
     """Plots the recorded actions, joint angles, torques, target positions, COM velocity, base height, feet status, contact forces, and rewards."""
     print("[INFO] Plotting episode data...")
     plots_dir = os.path.join(log_dir, "plots", cmd_filename_suffix)
@@ -107,7 +107,8 @@ def plot_episode_data(robot,
     takeoff_toggle_np = torch.stack(episode_takeoff_toggle).cpu().numpy().astype(int)
     time_np = np.arange(len(actions_np)) * dt
     all_body_heights_np = torch.stack(episode_all_body_heights).cpu().numpy() # ADDED: Convert all body heights to numpy
-
+    dynamic_cmd_pitch_np = torch.stack(episode_dynamic_cmd_pitch).cpu().numpy() # Convert dynamic pitch to numpy
+    dynamic_cmd_magnitude_np = torch.stack(episode_dynamic_cmd_magnitude).cpu().numpy() # Convert dynamic magnitude to numpy
 
     contact_forces_available = bool(episode_contact_forces)
     contact_forces_np = None
@@ -138,7 +139,6 @@ def plot_episode_data(robot,
     # --- Helper Functions ---
     def add_all_phase_shading(ax, time_data, phase_data, add_legend_labels=True):
         phase_colors = {
-            Phase.CROUCH: ('lightblue', 0.3),
             Phase.TAKEOFF: ('lightgreen', 0.3),
             Phase.FLIGHT: ('gold', 0.3),
             Phase.LANDING: ('lightcoral', 0.3)
@@ -301,12 +301,12 @@ def plot_episode_data(robot,
     axs_kin[2].xaxis.set_major_locator(ticker.MultipleLocator(0.1))
     axs_kin[2].xaxis.set_minor_locator(ticker.MultipleLocator(0.05))
     axs_kin[2].xaxis.set_major_formatter(ticker.FormatStrFormatter('%.1f'))
-    add_all_phase_shading(axs_kin[2], time_np, jump_phase_np, add_legend_labels=False) # Don't add phase legend here to avoid overriding velocity components legend
+    add_all_phase_shading(axs_kin[2], time_np, jump_phase_np, add_legend_labels=False)
     
     # COM Vel Magnitude
     com_lin_vel_mag = np.linalg.norm(com_lin_vel_np, axis=1)
     axs_kin[3].plot(time_np, com_lin_vel_mag, label="COM Velocity Magnitude")
-    axs_kin[3].axhline(y=actual_cmd_magnitude, color='r', linestyle='--', label=f"Command Mag ({actual_cmd_magnitude:.2f})")
+    axs_kin[3].plot(time_np, dynamic_cmd_magnitude_np, 'r--', label=f"Dynamic Command Mag ({actual_cmd_magnitude:.2f} initial)") # Plot dynamic command
     axs_kin[3].set_title("COM Linear Velocity Magnitude")
     axs_kin[3].set_xlabel("Time (s)")
     axs_kin[3].set_ylabel("Velocity (m/s)")
@@ -322,8 +322,8 @@ def plot_episode_data(robot,
     com_vel_pitch_deg = np.degrees(com_vel_pitch_rad)
     axs_kin[4].plot(time_np, com_vel_pitch_deg, label="COM Velocity Pitch Angle (XZ-plane)")
     # Add command pitch line if available and meaningful
-    actual_cmd_pitch_deg = math.degrees(actual_cmd_pitch) # actual_cmd_pitch is in radians
-    axs_kin[4].axhline(y=actual_cmd_pitch_deg, color='g', linestyle='--', label=f"Command Pitch ({actual_cmd_pitch_deg:.1f}°)")
+    dynamic_cmd_pitch_deg_np = np.degrees(dynamic_cmd_pitch_np) # Convert dynamic pitch to degrees
+    axs_kin[4].plot(time_np, dynamic_cmd_pitch_deg_np, 'g--', label=f"Dynamic Command Pitch ({math.degrees(actual_cmd_pitch):.1f}° initial)") # Plot dynamic command
     axs_kin[4].set_title("COM Velocity Pitch Angle in XZ Plane")
     axs_kin[4].set_xlabel("Time (s)")
     axs_kin[4].set_ylabel("Angle (degrees)")
@@ -953,6 +953,8 @@ def main():
     episode_contact_forces = [] # Initialize list for contact forces
     episode_rewards = [] # Initialize list for rewards
     episode_all_body_heights = [] # ADDED: For storing all body heights
+    episode_dynamic_cmd_pitch = [] # ADDED: For storing dynamic command pitch
+    episode_dynamic_cmd_magnitude = [] # ADDED: For storing dynamic command magnitude
 
     # reset environment
     obs = env.reset()
@@ -980,7 +982,7 @@ def main():
                 # Retrieve target joint positions (these are the scaled actions for ImplicitActuator)
                 target_positions = env.unwrapped.robot.data.joint_pos_target.clone().squeeze(0)
                 episode_target_positions.append(target_positions)
-                current_com_vel = get_center_of_mass_lin_vel(env.unwrapped).squeeze(0) # Squeeze batch dim
+                current_com_vel = env.unwrapped.center_of_mass_lin_vel.squeeze(0) # Squeeze batch dim
                 current_base_height = env.unwrapped.robot.data.root_pos_w[:, 2].squeeze(0) # Squeeze batch dim
                 current_base_x_pos = env.unwrapped.robot.data.root_pos_w[:, 0].squeeze(0)  # Squeeze batch dim
                 episode_com_lin_vel.append(current_com_vel.clone())
@@ -996,6 +998,21 @@ def main():
 
                 any_feet = any_feet_on_the_ground(env.unwrapped).squeeze(0) # Squeeze batch dim
                 episode_any_feet_on_ground.append(any_feet.clone()) # Store any feet status
+                
+                # Calculate and store dynamic pitch and magnitude directly
+                current_com_pos_for_dyn_calc = env.unwrapped.center_of_mass_pos # Shape: (1, 3) for single env
+                # Assuming env.unwrapped.target_height and env.unwrapped.target_length are (1,)
+                dynamic_pitch_tensor, dynamic_magnitude_tensor = convert_height_length_to_pitch_magnitude_from_position(
+                    env.unwrapped.target_height, # Should be (1,)
+                    env.unwrapped.target_length, # Should be (1,)
+                    current_com_pos_for_dyn_calc, # Should be (1,3)
+                    gravity=9.81 # Using the default from the function
+                )
+                dynamic_pitch = dynamic_pitch_tensor.squeeze(0) # Result from func is (1,), so squeeze to scalar tensor
+                dynamic_magnitude = dynamic_magnitude_tensor.squeeze(0) # Result from func is (1,), so squeeze to scalar tensor
+                
+                episode_dynamic_cmd_pitch.append(dynamic_pitch.clone())
+                episode_dynamic_cmd_magnitude.append(dynamic_magnitude.clone())
                 
                 # Read from the general contact sensor (if needed for other plots)
                 current_contact_forces = general_contact_sensor.data.net_forces_w.clone().squeeze(0) # Squeeze batch dim
@@ -1064,7 +1081,9 @@ def main():
                                           episode_takeoff_toggle=episode_takeoff_toggle,
                                           episode_contact_forces=episode_contact_forces,
                                           episode_rewards=episode_rewards, # Pass stored rewards 
-                                          episode_all_body_heights=episode_all_body_heights) # ADDED: Pass all body heights
+                                          episode_all_body_heights=episode_all_body_heights, # ADDED: Pass all body heights
+                                          episode_dynamic_cmd_pitch=episode_dynamic_cmd_pitch, # Pass dynamic pitch
+                                          episode_dynamic_cmd_magnitude=episode_dynamic_cmd_magnitude) # Pass dynamic magnitude
 
         if args_cli.wandb:
             wandb.finish()

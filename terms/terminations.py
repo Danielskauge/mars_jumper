@@ -1,15 +1,9 @@
 from __future__ import annotations
 import numpy as np
 import torch
-from typing import TYPE_CHECKING
-from isaaclab.assets import RigidObject
-from isaaclab.assets.articulation.articulation import Articulation
 from isaaclab.managers import SceneEntityCfg
-from isaaclab.sensors import ContactSensor
-from terms.utils import get_center_of_mass_lin_vel
-if TYPE_CHECKING:
-    from isaaclab.envs import ManagerBasedRLEnv
-from terms.phase import Phase
+from isaaclab.envs import ManagerBasedRLEnv
+from terms.utils import Phase
 
 DEG2RAD = np.pi/180
 
@@ -198,8 +192,8 @@ def failed_to_reach_target_height(
         Boolean tensor indicating which environments should terminate due to failed height reach.
     """
     in_flight_phase = env.jump_phase == Phase.FLIGHT
-    is_descending = get_center_of_mass_lin_vel(env)[:, 2] < 0.1
-    height_error = env.target_height - env.metrics.max_height_achieved
+    is_descending = env.center_of_mass_lin_vel[:, 2] < 0.3
+    height_error = env.target_height - env.max_height_achieved
     return in_flight_phase & is_descending & (height_error > height_threshold)
     
 def entered_flight(

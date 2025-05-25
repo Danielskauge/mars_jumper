@@ -12,15 +12,13 @@ specify the reward function and its parameters.
 from __future__ import annotations
 from enum import IntEnum
 import torch
-from typing import TYPE_CHECKING, Literal
-import numpy as np
 import logging
 from isaaclab.assets import Articulation, RigidObject
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.sensors import ContactSensor, RayCaster
-from terms.phase import Phase
-from terms.utils import get_center_of_mass_lin_vel, convert_command_to_euclidean_vector, convert_height_length_to_pitch_magnitude, get_dynamic_takeoff_vector
-from collections.abc import Sequence
+from terms.utils import Phase
+from terms.utils import convert_height_length_to_pitch_magnitude
+from terms.utils import convert_pitch_magnitude_to_vector
 
 logger = logging.getLogger(__name__)
 
@@ -31,10 +29,46 @@ class Kernel(IntEnum):
     LINEAR = 3
     SQUARE = 4
     SHIFTED_SQUARE = 5
+    HUBER = 6
 
-if TYPE_CHECKING:
-    from isaaclab.envs import ManagerBasedRLEnv
-    from envs.takeoff_env import MarsJumperEnv
+from isaaclab.envs import ManagerBasedRLEnv
+    
+# =================================================================================
+# Helper Functions
+# =================================================================================
+
+def _get_active_envs_mask(env: ManagerBasedRLEnv, phases: list[Phase]) -> torch.Tensor:
+    """Get boolean mask for environments active in specified phases."""
+    active_mask = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
+    for phase_val in phases: # Renamed to avoid conflict with terms.phase.Phase
+        active_mask |= (env.jump_phase == phase_val)
+    return active_mask
+
+def _init_reward_tensor(env: ManagerBasedRLEnv) -> torch.Tensor:
+    return torch.zeros(env.num_envs, device=env.device)
+
+def _apply_kernel(values: torch.Tensor, kernel: Kernel, scale: float = 1.0, delta: float = 1.0, e_max: float = 1.0) -> torch.Tensor:
+    """Apply specified kernel to values.
+    
+    """
+    if kernel == Kernel.EXPONENTIAL:
+        return torch.exp(-scale * values)
+    elif kernel == Kernel.INVERSE_LINEAR:
+        return 1 / (1 + scale * values)
+    elif kernel == Kernel.INVERSE_SQUARE:
+        return 1 / (1 + scale * values**2)
+    elif kernel == Kernel.LINEAR:
+        return scale * values
+    elif kernel == Kernel.SQUARE:
+        return scale * values**2
+    elif kernel == Kernel.HUBER:
+        return shifted_huber_kernel(values, delta, e_max)
+    else:
+        raise ValueError(f"Unsupported kernel: {kernel}")
+
+# =================================================================================
+# Reward Functions
+# =================================================================================
     
 def shifted_huber_kernel(e, delta, e_max):
     """
@@ -62,304 +96,117 @@ def shifted_huber_kernel(e, delta, e_max):
     c_shift = 0.5 * e_max**2 / delta if e_max <= delta else abs(e_max) - delta/2
     return c_shift - huber
 
-def relative_cmd_error(env: ManagerBasedRLEnv, kernel: Kernel, scale: float, bias: float = 0.0) -> torch.Tensor:
-    """Computes reward based on relative error between robot's velocity and commanded takeoff vector.
+def contact_forces(env: ManagerBasedRLEnv, 
+                   phases: list[Phase] = None,
+                   kernel: Kernel = Kernel.LINEAR,
+                   scale: float = 1.0,
+                   delta: float = 1.0,
+                   e_max: float = 1.0) -> torch.Tensor:
+    """Penalize the contact forces of the robot except for the feet."""
+    if phases is None:
+        phases = [Phase.TAKEOFF, Phase.FLIGHT, Phase.LANDING, Phase.CROUCH]
     
-    Similar to cmd_error() but normalizes error by command magnitude to be scale-invariant.
+    active_mask = _get_active_envs_mask(env, phases)
+    reward_tensor = _init_reward_tensor(env)
+    
+    if torch.any(active_mask):
+        # Corrected indexing: apply active_mask first, then select bodies
+        forces_active_envs = env.contact_sensor.data.net_forces_w[active_mask]
+        net_contact_forces = forces_active_envs[:, env.bodies_except_feet_idx]
+        forces_magnitude = torch.norm(net_contact_forces, dim=-1)
+        values = torch.sum(forces_magnitude, dim=-1)
+        computed_values = _apply_kernel(values, kernel, scale, delta, e_max)
+        reward_tensor[active_mask] = computed_values
+    
+    return reward_tensor
+    
+def action_rate(env: ManagerBasedRLEnv, 
+                phases: list[Phase] = None,
+                kernel: Kernel = Kernel.SQUARE,
+                scale: float = 1.0,
+                delta: float = 1.0,
+                e_max: float = 1.0) -> torch.Tensor:
+    """Penalize the rate of change of the actions."""
+    if phases is None:
+        phases = [Phase.TAKEOFF, Phase.FLIGHT, Phase.LANDING, Phase.CROUCH]
+    
+    active_mask = _get_active_envs_mask(env, phases)
+    reward_tensor = _init_reward_tensor(env)
+    
+    if torch.any(active_mask):
+        action_diff = env.action_manager.action[active_mask] - env.action_manager.prev_action[active_mask]
+        values = torch.sum(torch.square(action_diff), dim=1)
+        computed_values = _apply_kernel(values, kernel, scale, delta, e_max)
+        reward_tensor[active_mask] = computed_values
+    
+    return reward_tensor
+    
+def joint_vel_l1(env: ManagerBasedRLEnv, 
+                 asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+                 phases: list[Phase] = None,
+                 kernel: Kernel = Kernel.LINEAR,
+                 scale: float = 1.0,
+                 delta: float = 1.0,
+                 e_max: float = 1.0) -> torch.Tensor:
+    """Penalize joint velocities on the articulation using an L1-kernel."""
+    if phases is None:
+        phases = [Phase.TAKEOFF, Phase.FLIGHT, Phase.LANDING, Phase.CROUCH]
+    
+    active_mask = _get_active_envs_mask(env, phases)
+    reward_tensor = _init_reward_tensor(env)
+    
+    if torch.any(active_mask):
+        asset: Articulation = env.scene[asset_cfg.name]
+        # Ensure joint_ids from asset_cfg are applied correctly if asset_cfg has them.
+        # Defaulting to all joints of the asset if asset_cfg.joint_ids is None or not present.
+        joint_ids_to_penalize = asset_cfg.joint_ids if hasattr(asset_cfg, 'joint_ids') and asset_cfg.joint_ids is not None else slice(None)
+        values = torch.sum(torch.abs(asset.data.joint_vel[active_mask, joint_ids_to_penalize]), dim=1)
+        computed_values = _apply_kernel(values, kernel, scale, delta, e_max)
+        reward_tensor[active_mask] = computed_values
+    
+    return reward_tensor
+
+def cmd_error(env: ManagerBasedRLEnv, kernel: Kernel, scale: float, delta: float = 1.0, e_max: float = 1.0, error_type: str = "relative") -> torch.Tensor:
+    """Unified command tracking error function.
+    
+    Computes reward based on error between robot's velocity and commanded takeoff vector.
     Only active during takeoff phase. Returns values in [0,1] where 1 means perfect tracking.
     
     Args:
         env: Environment instance
+        kernel: Error mapping function (EXPONENTIAL, INVERSE_LINEAR, INVERSE_SQUARE, SHIFTED_SQUARE)
         scale: Scaling factor for error. Higher values create sharper reward gradients.
-        bias: Bias term for shifted square kernel.
-        kernel: Error mapping function. Options:
-            - "exponential": exp(-scale * relative_error) 
-            - "inverse_linear": 1/(1 + scale * relative_error)
-            - "shifted_square": bias - relative_error**2
+        error_type: "relative" (normalized by command magnitude) or "absolute" (raw error)
+        
     Returns:
         Reward tensor of shape (num_envs,)
     """
-    takeoff_envs = env.jump_phase == Phase.TAKEOFF
-    if not torch.any(takeoff_envs):
-        return torch.zeros(env.num_envs, device=env.device)
+
+    reward_tensor = _init_reward_tensor(env)
     
-    takeoff_env_ids = takeoff_envs.nonzero(as_tuple=False).squeeze(-1)
-    takeoff_vector = _get_dynamic_takeoff_vector(env, takeoff_env_ids)
-    robot_vel_vec = get_center_of_mass_lin_vel(env)[takeoff_envs]
-    reward_tensor = torch.zeros(env.num_envs, device=env.device)
-    relative_error = torch.norm(robot_vel_vec - takeoff_vector, dim=-1) / torch.norm(takeoff_vector, dim=-1)
-    takeoff_rewards = torch.zeros_like(relative_error)
-    if kernel == Kernel.EXPONENTIAL:
-        takeoff_rewards = torch.exp(-scale*relative_error)
-    elif kernel == Kernel.INVERSE_LINEAR:
-        takeoff_rewards = 1/(1 + scale*relative_error)
-    elif kernel == Kernel.INVERSE_SQUARE:
-        takeoff_rewards = 1/(1 + scale*relative_error**2)
-    elif kernel == Kernel.SHIFTED_SQUARE:
-        takeoff_rewards = bias - relative_error**2
-
-    # Check vertical velocity (assuming index 2 is vertical)
-    vertical_velocity = robot_vel_vec[:, 2]
-    downward_mask = vertical_velocity < 0
-
-    takeoff_rewards[downward_mask] = 0
-
-    reward_tensor[takeoff_envs] = takeoff_rewards
-    return reward_tensor
-
-def landing_base_vertical_vel_l1(env: ManagerBasedRLEnv) -> torch.Tensor:
-    reward_tensor = torch.zeros(env.num_envs, device=env.device)
-    active_mask = env.landing_mask # Or any other relevant mask
-    if torch.any(active_mask): # Guard against empty mask
-        # Ensure the RHS is also indexed by the mask if it's a full tensor
-        velocities = env.robot.data.root_com_lin_vel_w[:, 2]
-        reward_tensor[active_mask] = torch.abs(velocities[active_mask])
-    return reward_tensor
-
-def landing_abduction_zero_pos(env: ManagerBasedRLEnv) -> torch.Tensor:
-    """Penalize the robot for having the abduction joint at zero position, linear kernel. Use negative weight."""
-    reward_tensor = torch.zeros(env.num_envs, device=env.device)
-    active_mask = env.landing_mask
-    if torch.any(active_mask):
-        abduction_pos = env.robot.data.joint_pos[active_mask, env.abduction_joint_idx]
-        reward_tensor[active_mask] = torch.sum(torch.abs(abduction_pos), dim=-1)
-    return reward_tensor
-    
-def landing_foot_ground_contact(env: ManagerBasedRLEnv) -> torch.Tensor:
-    """+1 reward for each foot in contact with the ground"""
-    reward_tensor = torch.zeros(env.num_envs, device=env.device)
-
-    # If no environments are in the landing phase, return zeros
-    if not torch.any(env.landing_mask):
+    if not torch.any(env.takeoff_mask):
         return reward_tensor
 
-    contact_sensor: ContactSensor = env.scene[SceneEntityCfg("contact_sensor").name]
-    feet_idx, _ = env.robot.find_bodies(".*FOOT.*")
-    feet_forces = contact_sensor.data.net_forces_w[:, feet_idx]
-    is_foot_in_contact = torch.norm(feet_forces, dim=-1) > contact_sensor.cfg.force_threshold  # Shape: (num_envs, num_feet)
-    
-    # Calculate sum of contacts for ALL envs first
-    sum_contact_values_all_envs = torch.sum(is_foot_in_contact, dim=-1).float()  # Shape: (num_envs,)
-    
-    # Apply this sum ONLY to the environments that are actually in the landing_mask
-    reward_tensor[env.landing_mask] = sum_contact_values_all_envs[env.landing_mask]
-    return reward_tensor
+    takeoff_vector = env.dynamic_takeoff_vector[env.takeoff_mask] 
+    robot_vel_vec = env.center_of_mass_lin_vel[env.takeoff_mask] 
 
-def contact_forces(env: ManagerBasedRLEnv, phases: list[Phase], kernel: Literal[Kernel.LINEAR, Kernel.SQUARE]) -> torch.Tensor:
-    """Penalize the contact forces of the robot except for the feet, using L2 squared kernel."""
-    
-    active_envs = torch.zeros(env.num_envs, device=env.device)
-    for phase in phases:
-        active_envs = torch.logical_or(active_envs, env.jump_phase == phase)
-    if not torch.any(active_envs):
-        return torch.zeros(env.num_envs, device=env.device)
-    
-    reward_tensor = torch.zeros(env.num_envs, device=env.device)
-    
-    net_contact_forces = env.contact_sensor.data.net_forces_w[:, env.bodies_except_feet_idx] 
-    forces_magnitude = torch.norm(net_contact_forces, dim=-1) #shape [num_envs, num_bodies]
-    sum_forces_magnitude = torch.sum(forces_magnitude, dim=-1) #shape [num_envs]
-    if kernel == Kernel.LINEAR:
-        reward_tensor[active_envs] = sum_forces_magnitude[active_envs]
-    elif kernel == Kernel.SQUARE:
-        reward_tensor[active_envs] = torch.square(sum_forces_magnitude[active_envs])
-    
-    return reward_tensor
-    
-    
-def contact_forces_potential_based(env: ManagerBasedRLEnv, 
-                             sensor_cfg: SceneEntityCfg, 
-                             phases: list[Phase], 
-                             kernel: Literal[Kernel.LINEAR, Kernel.SQUARE],
-                             potential_buffer_postfix: str) -> torch.Tensor:
-    """Calculates potential-based reward shaping for contact forces.
-
-    The potential P(s) is defined as the current penalty V(s) (sum of forces).
-    The reward component from this function is P(s') - P(s) = V(s') - V(s).
-    If V is a cost (higher is worse), a negative weight in RewardTermCfg is needed.
-    This function dynamically manages a buffer on the `env` object to store V(s).
-    """
-    buffer_name = "_prev_potential_contact_forces_" + potential_buffer_postfix
-    # Initialize buffer on env if it doesn't exist
-    if not hasattr(env, buffer_name):
-        setattr(env, buffer_name, torch.zeros(env.num_envs, device=env.device))
-    
-    previous_penalty_values = getattr(env, buffer_name)
-
-    # Determine active environments based on phases
-    active_for_current_phase = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
-    active_for_prev_phase = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
-    for phase in phases:
-        active_for_current_phase |= (env.jump_phase == phase)
-        active_for_prev_phase |= (env.prev_jump_phase == phase)
-        
-    if not torch.any(active_for_current_phase):
-        return torch.zeros(env.num_envs, device=env.device)
-
-    # Calculate current penalty V(s') for ALL environments
-    contact_sensor: ContactSensor = env.scene[sensor_cfg.name]
-    
-    net_contact_forces = contact_sensor.data.net_forces_w[:, sensor_cfg.body_ids]
-    forces_magnitude = torch.norm(net_contact_forces, dim=-1)  # shape [num_envs, num_bodies_in_sensor_cfg]
-    current_penalty_values = torch.sum(forces_magnitude, dim=-1)  # shape [num_envs]
-
-    if kernel == Kernel.SQUARE:
-        current_penalty_values = torch.square(current_penalty_values)
-    elif kernel != Kernel.LINEAR:
-        raise ValueError(f"Unsupported kernel type: {kernel} for contact_forces reward term.")
-
-    # Mask for environments where the reward was active in the previous phase AND is active in the current phase
-    continuously_active_mask = active_for_current_phase & active_for_prev_phase
-
-    # Initialize reward shaping component to zeros.
-    reward_shaping_component = torch.zeros_like(current_penalty_values)
-
-    # Calculate reward V(s_curr) - V(s_prev) only for continuously active environments.
-    # For newly active environments (active_for_current_phase & ~active_for_prev_phase),
-    # reward_shaping_component remains 0 because they are not in continuously_active_mask.
-    # For environments not active in current_s_begin, it also remains 0.
-    if torch.any(continuously_active_mask):
-        reward_shaping_component[continuously_active_mask] = \
-            current_penalty_values[continuously_active_mask] - \
-            previous_penalty_values[continuously_active_mask]
-
-    # Buffer update: store V(s_current_end) for the next step.
-    # For environments that are resetting in this step, their "previous value" for the *next* episode
-    # should reflect an initial state (e.g., 0 for contact forces).
-    # env.reset_buf is set by TerminationManager before RewardManager.compute() is called.
-    next_step_prev_potential_values = current_penalty_values.clone().detach()
-    if hasattr(env, 'reset_buf'): # ManagerBasedRLEnv has reset_buf
-        reset_env_ids = env.reset_buf.nonzero(as_tuple=False).squeeze(-1)
-        if reset_env_ids.numel() > 0:
-            next_step_prev_potential_values[reset_env_ids] = 0.0  # Assuming 0 is the initial potential for reset states
-    
-    setattr(env, buffer_name, next_step_prev_potential_values)
-
-    return reward_shaping_component
-    
-def action_rate_l2(env: ManagerBasedRLEnv, phases: list[Phase]) -> torch.Tensor:
-    """Penalize the rate of change of the actions using L2 squared kernel."""
-    reward_tensor = torch.zeros(env.num_envs, device=env.device)
-    active_envs = torch.zeros(env.num_envs, device=env.device)
-    for phase in phases:
-        active_envs = torch.logical_or(active_envs, env.jump_phase == phase)
-        
-    reward_tensor[active_envs] = torch.sum(torch.square(env.action_manager.action - env.action_manager.prev_action), dim=1)
-    return reward_tensor
-    
-def landing_base_height(env: ManagerBasedRLEnv,
-                           asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
-                           sensor_cfg: SceneEntityCfg | None = None,
-                           target_height: float = 0.0,
-                           kernel: Kernel = Kernel.INVERSE_LINEAR,
-                           scale: float = 1.0) -> torch.Tensor:
-    """Penalize asset height from its target using L2 squared kernel.
-
-    Note:
-        For flat terrain, target height is in the world frame. For rough terrain,
-        sensor readings can adjust the target height to account for the terrain.
-    """
-    # extract the used quantities (to enable type-hinting)
-    landing_envs = env.jump_phase == Phase.LANDING
-    reward_tensor = torch.zeros(env.num_envs, device=env.device)
-    asset: RigidObject = env.scene[asset_cfg.name]
-    if sensor_cfg is not None:
-        sensor: RayCaster = env.scene[sensor_cfg.name]
-        # Adjust the target height using the sensor data
-        adjusted_target_height = target_height + torch.mean(sensor.data.ray_hits_w[..., 2], dim=1)
+    error_vec = robot_vel_vec - takeoff_vector
+    if error_type == "relative":
+        error = torch.norm(error_vec, dim=-1) / torch.norm(takeoff_vector, dim=-1)
+    elif error_type == "absolute":
+        error = torch.norm(error_vec, dim=-1)
     else:
-        # Use the provided target height directly for flat terrain
-        adjusted_target_height = target_height
-    # Compute the L2 squared penalty
-    if kernel == Kernel.INVERSE_LINEAR:
-        reward_tensor[landing_envs] = 1 / (1 + scale * (asset.data.root_pos_w[landing_envs, 2] - adjusted_target_height))
-    elif kernel == Kernel.INVERSE_SQUARE:
-        reward_tensor[landing_envs] = 1 / (1 + scale * (asset.data.root_pos_w[landing_envs, 2] - adjusted_target_height)**2)
-    elif kernel == Kernel.EXPONENTIAL:
-        reward_tensor[landing_envs] = torch.exp(-scale * (asset.data.root_pos_w[landing_envs, 2] - adjusted_target_height))
-    elif kernel == Kernel.LINEAR:
-        reward_tensor[landing_envs] = (asset.data.root_pos_w[landing_envs, 2] - adjusted_target_height)
-    elif kernel == Kernel.SQUARE:
-        reward_tensor[landing_envs] = (asset.data.root_pos_w[landing_envs, 2] - adjusted_target_height)**2
+        raise ValueError(f"error_type must be 'relative' or 'absolute', got {error_type}")
     
-    return reward_tensor
+    rewards = _apply_kernel(values=error, kernel=kernel, scale=scale, delta=delta, e_max=e_max)
     
-def joint_vel_l1(env: ManagerBasedRLEnv, phases: list[Phase]) -> torch.Tensor:
-    """Penalize joint velocities on the articulation using an L1-kernel."""
-    # extract the used quantities (to enable type-hinting)
-    active_envs = torch.zeros(env.num_envs, device=env.device)
-    for phase in phases:
-        active_envs = torch.logical_or(active_envs, env.jump_phase == phase)
-        
-
-    asset_cfg = SceneEntityCfg("robot")
-    asset: Articulation = env.scene[asset_cfg.name]
-    reward_tensor = torch.zeros(env.num_envs, device=env.device)
-    reward_tensor[active_envs] = torch.sum(torch.abs(asset.data.joint_vel[active_envs, asset_cfg.joint_ids]), dim=1)
+    downward_mask = robot_vel_vec[:, 2] < 0
+    rewards[downward_mask] = 0
+    
+    reward_tensor[env.takeoff_mask] = rewards
     return reward_tensor
 
-def action_rate(env: ManagerBasedRLEnv, phases: list[Phase], kernel: Kernel, scale: float = 1.0) -> torch.Tensor:
-    """Penalize the rate of change of the actions using L2 squared kernel."""
-    reward_tensor = torch.zeros(env.num_envs, device=env.device)
-    active_envs = torch.zeros(env.num_envs, device=env.device)
-    for phase in phases:
-        active_envs = torch.logical_or(active_envs, env.jump_phase == phase)
-        
-    if kernel == Kernel.SQUARE:
-        reward_tensor[active_envs] = torch.sum(torch.square(env.action_manager.action[active_envs] - env.action_manager.prev_action[active_envs]), dim=1)
-    elif kernel == Kernel.LINEAR:
-        reward_tensor[active_envs] = torch.sum(torch.abs(env.action_manager.action[active_envs] - env.action_manager.prev_action[active_envs]), dim=1)
-    elif kernel == Kernel.EXPONENTIAL:
-        reward_tensor[active_envs] = torch.sum(torch.exp(-scale * (env.action_manager.action[active_envs] - env.action_manager.prev_action[active_envs])), dim=1)
-    elif kernel == Kernel.INVERSE_SQUARE:
-        reward_tensor[active_envs] = torch.sum(1/(1 + scale * (env.action_manager.action[active_envs] - env.action_manager.prev_action[active_envs])**2), dim=1)
-    return reward_tensor
-
-
-    
-def cmd_error(env: ManagerBasedRLEnv, kernel: Kernel, scale: float) -> torch.Tensor:
-    """Computes reward based on absolute error between robot's velocity and commanded takeoff vector.
-    
-    Only active during takeoff phase. Returns values in [0,1] where 1 means perfect tracking.
-    
-    Args:
-        env: Environment instance
-        scale: Scaling factor for error. Higher values create sharper reward gradients.
-        kernel: Error mapping function. Options:
-            - "exponential": exp(-scale * error) 
-            - "inverse_linear": 1/(1 + scale * error)
-            - "inverse_linear": 1/(1 + scale * error)
-            
-    Returns:
-        Reward tensor of shape (num_envs,)
-    """
-    takeoff_envs = env.jump_phase == Phase.TAKEOFF
-    cmd = _get_command_as_pitch_magnitude(env, takeoff_envs.nonzero(as_tuple=False).squeeze(-1))
-    cmd_vec = convert_command_to_euclidean_vector(cmd)
-    robot_vel_vec = get_center_of_mass_lin_vel(env)[takeoff_envs]
-    reward_tensor = torch.zeros(env.num_envs, device=env.device)
-    absolute_error = torch.norm(robot_vel_vec - cmd_vec, dim=-1)
-    takeoff_rewards = torch.zeros_like(absolute_error)
-    if kernel == Kernel.EXPONENTIAL:
-        takeoff_rewards = torch.exp(-scale*absolute_error)
-    elif kernel == Kernel.INVERSE_LINEAR:
-        takeoff_rewards = 1/(1 + scale*absolute_error)
-    elif kernel == Kernel.INVERSE_SQUARE:
-        takeoff_rewards = 1/(1 + scale*absolute_error**2)
-
-    # Check vertical velocity (assuming index 2 is vertical)
-    vertical_velocity = robot_vel_vec[:, 2]
-    downward_mask = vertical_velocity < 0
-
-    # Zero out rewards for takeoff envs moving downwards
-    takeoff_rewards[downward_mask] = 0
-
-    # Assign the computed rewards back to the correct indices
-    reward_tensor[takeoff_envs] = takeoff_rewards
-    
-    return reward_tensor
-
-def liftoff_relative_cmd_error(env: ManagerBasedRLEnv, kernel: Kernel, scale: float, bias: float = 0.0) -> torch.Tensor:
+def liftoff_relative_cmd_error(env: ManagerBasedRLEnv, kernel: Kernel, scale: float) -> torch.Tensor:
     """Computes reward based on relative error between robot's velocity and commanded takeoff vector, ONLY at the moment of liftoff.
     
     Similar to relative_cmd_error() but only active at the transition from TAKEOFF to FLIGHT.
@@ -368,137 +215,53 @@ def liftoff_relative_cmd_error(env: ManagerBasedRLEnv, kernel: Kernel, scale: fl
     Args:
         env: Environment instance
         scale: Scaling factor for error. Higher values create sharper reward gradients.
-        bias: Bias term for shifted square kernel.
         kernel: Error mapping function. Options:
             - "exponential": exp(-scale * relative_error) 
             - "inverse_linear": 1/(1 + scale * relative_error)
-            - "shifted_square": bias - relative_error**2
+            - "huber": shifted_huber_kernel(relative_error, delta, e_max)
     Returns:
         Reward tensor of shape (num_envs,)
     """
-    # Identify environments that transitioned from TAKEOFF to FLIGHT in this step
+    # This function has specific transition logic (TAKEOFF -> FLIGHT) and doesn't fit the generic decorator.
     transitioned_to_flight = (env.prev_jump_phase == Phase.TAKEOFF) & (env.jump_phase == Phase.FLIGHT)
-    
-    reward_tensor = torch.zeros(env.num_envs, device=env.device)
+    reward_tensor = _init_reward_tensor(env)
 
     if not torch.any(transitioned_to_flight):
-        return reward_tensor # Return zeros if no envs transitioned
+        return reward_tensor
     
     transitioned_env_ids = transitioned_to_flight.nonzero(as_tuple=False).squeeze(-1)
-    takeoff_vector = _get_dynamic_takeoff_vector(env, transitioned_env_ids)
-    robot_vel_vec = get_center_of_mass_lin_vel(env)[transitioned_to_flight]
-    
-    takeoff_vector_norm = torch.norm(takeoff_vector, dim=-1)
-    # Avoid division by zero if command magnitude can be zero.
-    # For takeoff commands, magnitude should generally be positive.
-    safe_takeoff_vector_norm = torch.where(takeoff_vector_norm < 1e-6, torch.ones_like(takeoff_vector_norm), takeoff_vector_norm)
-    
-    relative_error = torch.norm(robot_vel_vec - takeoff_vector, dim=-1) / safe_takeoff_vector_norm
-    
-    liftoff_rewards = torch.zeros_like(relative_error)
-    if kernel == Kernel.EXPONENTIAL:
-        liftoff_rewards = torch.exp(-scale*relative_error)
-    elif kernel == Kernel.INVERSE_LINEAR:
-        liftoff_rewards = 1/(1 + scale*relative_error)
-    elif kernel == Kernel.INVERSE_SQUARE:
-        liftoff_rewards = 1/(1 + scale*relative_error**2)
-    elif kernel == Kernel.SHIFTED_SQUARE:
-        liftoff_rewards = bias - relative_error**2
-
-    reward_tensor[transitioned_to_flight] = liftoff_rewards
-    return reward_tensor
-
-def flat_orientation(env: ManagerBasedRLEnv, phases: list[Phase]) -> torch.Tensor:
-    """ Penalize the xy-components of the projected gravity vector. Sum of squared values.
-    Returns postive value, use negative weight.
-    """
-    asset: RigidObject = env.scene[SceneEntityCfg("robot").name]
-    active_envs = torch.zeros(env.num_envs, device=env.device)
-    for phase in phases:
-        active_envs = torch.logical_or(active_envs, env.jump_phase == phase)
-        
-    if not torch.any(active_envs):
-        return torch.zeros(env.num_envs, device=env.device)
-    
-    reward_tensor = torch.zeros(env.num_envs, device=env.device)
-    reward_tensor[active_envs] = torch.sum(torch.square(asset.data.projected_gravity_b[active_envs, :2]), dim=1)
-    
-    return reward_tensor
-
-def left_right_joint_symmetry(
-    env: ManagerBasedRLEnv,
-    phases: list[Phase],
-    scale: float = 4.0
-) -> torch.Tensor:
-    """ Reward the robot for maintaining left-right joint angle symmetry using angle differences.
-
-    Calculates the difference between corresponding joints on diagonal legs
-    (LF-RH and RF-LH pairs) for knee, hip flexion, and abductor joints.
-    The reward encourages these differences to be close to zero.
-
-    The reward is calculated as: exp(-scale * penalty), where penalty is either
-    the sum of absolute differences ('linear') or the sum of squared differences ('square')
-    across the 6 joint pairs.
-
-    Active in specified phases (e.g., landing, takeoff, crouch), but potentially not
-    in flight phase to allow for attitude control during aerial maneuvers.
-
-    Args:
-        env: The environment instance.
-        phases: List of phases during which this reward is active.
-        reward_type: How to measure the difference ('linear' for absolute, 'square' for squared).
-        scale: Scaling factor for the exponential reward shaping. Higher values penalize deviations more.
-
-    Returns:
-        reward_tensor: Shape (num_envs,), normalized between (0, 1] where 1 means perfect symmetry.
-    """
-    asset: Articulation = env.scene[SceneEntityCfg("robot").name]
-    active_envs_mask = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
-    for phase in phases:
-        active_envs_mask |= (env.jump_phase == phase)
-
-    reward_tensor = torch.zeros(env.num_envs, device=env.device)
-
-    if not torch.any(active_envs_mask):
+    if transitioned_env_ids.numel() == 0:
         return reward_tensor
+        
+    takeoff_vector = env.dynamic_takeoff_vector[transitioned_env_ids]
+    robot_vel_vec = env.center_of_mass_lin_vel[transitioned_to_flight]
+    
+    relative_error = torch.norm(robot_vel_vec - takeoff_vector, dim=-1) / torch.norm(takeoff_vector, dim=-1)
+    
+    rewards = _apply_kernel(relative_error, kernel, scale)
 
-    # Find joint indices
-    LF_HFE_idx, _ = asset.find_joints(".*LF_HFE.*")
-    RH_HFE_idx, _ = asset.find_joints(".*RH_HFE.*")
-    RF_HFE_idx, _ = asset.find_joints(".*RF_HFE.*")
-    LH_HFE_idx, _ = asset.find_joints(".*LH_HFE.*")
+    reward_tensor[transitioned_to_flight] = rewards
+    return reward_tensor
 
-    LF_KFE_idx, _ = asset.find_joints(".*LF_KFE.*")
-    RH_KFE_idx, _ = asset.find_joints(".*RH_KFE.*")
-    RF_KFE_idx, _ = asset.find_joints(".*RF_KFE.*")
-    LH_KFE_idx, _ = asset.find_joints(".*LH_KFE.*")
-
-    LF_HAA_idx, _ = asset.find_joints(".*LF_HAA.*")
-    RH_HAA_idx, _ = asset.find_joints(".*RH_HAA.*")
-    RF_HAA_idx, _ = asset.find_joints(".*RF_HAA.*")
-    LH_HAA_idx, _ = asset.find_joints(".*LH_HAA.*")
-
-    # Get joint positions for active environments
-    q_pos = asset.data.joint_pos[active_envs_mask]
-
-    # Calculate differences for diagonal pairs (squeeze to remove the last dim)
-    diff_front_knee = (q_pos[:, LF_KFE_idx] - q_pos[:, RH_KFE_idx]).squeeze(-1)
-    diff_back_knee = (q_pos[:, RF_KFE_idx] - q_pos[:, LH_KFE_idx]).squeeze(-1)
-    diff_front_hfe = (q_pos[:, LF_HFE_idx] - q_pos[:, RH_HFE_idx]).squeeze(-1)
-    diff_back_hfe = (q_pos[:, RF_HFE_idx] - q_pos[:, LH_HFE_idx]).squeeze(-1)
-    diff_front_haa = (q_pos[:, LF_HAA_idx] - q_pos[:, RH_HAA_idx]).squeeze(-1)
-    diff_back_haa = (q_pos[:, RF_HAA_idx] - q_pos[:, LH_HAA_idx]).squeeze(-1)
-
-    penalty = (
-        torch.square(diff_front_knee) + torch.square(diff_back_knee) +
-        torch.square(diff_front_hfe) + torch.square(diff_back_hfe) +
-        torch.square(diff_front_haa) + torch.square(diff_back_haa)
-    )
-    # Calculate exponential reward
-    symmetry_reward = torch.exp(-scale * penalty)
-
-    reward_tensor[active_envs_mask] = symmetry_reward
-
+def flat_orientation(env: ManagerBasedRLEnv, 
+                     phases: list[Phase] = None,
+                     kernel: Kernel = Kernel.LINEAR,
+                     scale: float = 1.0,
+                     delta: float = 1.0,
+                     e_max: float = 1.0) -> torch.Tensor:
+    """Penalize the xy-components of the projected gravity vector."""
+    if phases is None:
+        phases = [Phase.TAKEOFF, Phase.FLIGHT, Phase.LANDING, Phase.CROUCH]
+    
+    active_mask = _get_active_envs_mask(env, phases)
+    reward_tensor = _init_reward_tensor(env)
+    
+    if torch.any(active_mask):
+        asset: RigidObject = env.scene[SceneEntityCfg("robot").name]
+        values = torch.sum(torch.square(asset.data.projected_gravity_b[active_mask, :2]), dim=1)
+        computed_values = _apply_kernel(values, kernel, scale, delta, e_max)
+        reward_tensor[active_mask] = computed_values
+    
     return reward_tensor
 
 def base_height_l1(
@@ -512,107 +275,64 @@ def base_height_l1(
         For flat terrain, target height is in the world frame. For rough terrain,
         sensor readings can adjust the target height to account for the terrain.
     """
-    # extract the used quantities (to enable type-hinting)
     if sensor_cfg is not None:
         sensor: RayCaster = env.scene[sensor_cfg.name]
-        # Adjust the target height using the sensor data
         adjusted_target_height = target_height + torch.mean(sensor.data.ray_hits_w[..., 2], dim=1)
     else:
-        # Use the provided target height directly for flat terrain
         adjusted_target_height = target_height
-    # Compute the L1 penalty
     return torch.abs(env.robot.data.root_pos_w[:, 2] - adjusted_target_height)
 
-
-def feet_ground_contact(env: ManagerBasedRLEnv) -> torch.Tensor:
-    """ Make the robot maintain ground contact. Active in crouch and landing phases
-    Return:
-        reward_tensor: Shape (num_envs,), Value between 0 and 1, +0.25 for each foot in contact with the ground
-    """
-    #landing_envs = env.jump_phase == Phase.LANDING
-    #crouch_envs = env.jump_phase == Phase.CROUCH
-    contact_sensor: ContactSensor = env.scene[SceneEntityCfg("contact_sensor").name]
-    feet_idx, _ = env.robot.find_bodies(".*FOOT.*")
+def feet_ground_contact(env: ManagerBasedRLEnv, 
+                       phases: list[Phase] = None,
+                       kernel: Kernel = Kernel.LINEAR,
+                       scale: float = 1.0,
+                       delta: float = 1.0,
+                       e_max: float = 1.0) -> torch.Tensor:
+    """Make the robot maintain ground contact."""
+    if phases is None:
+        phases = [Phase.CROUCH, Phase.LANDING]
     
-    reward_tensor = torch.zeros(env.num_envs, device=env.device)
-    #active_envs = landing_envs | crouch_envs
+    active_mask = _get_active_envs_mask(env, phases)
+    reward_tensor = _init_reward_tensor(env)
     
-    #if not torch.any(active_envs):
-    #    return torch.zeros(env.num_envs, device=env.device)
-    
-    # Check if feet are in contact with the ground
-    feet_forces = contact_sensor.data.net_forces_w[:, feet_idx] #tensor [num_envs, num_feet, 3]
-    is_foot_in_contact = torch.norm(feet_forces, dim=-1) > contact_sensor.cfg.force_threshold #bool tensor [num_envs, num_feet]
-    sum_feet_in_contact = torch.mean(is_foot_in_contact.float(), dim=-1) #scalar tensor [num_envs]
-    
-    reward_tensor = sum_feet_in_contact
+    if torch.any(active_mask):
+        contact_sensor: ContactSensor = env.scene[SceneEntityCfg("contact_sensor").name]
+        feet_idx, _ = env.robot.find_bodies(".*FOOT.*")
+        
+        all_feet_forces = contact_sensor.data.net_forces_w[:, feet_idx] 
+        active_feet_forces = all_feet_forces[active_mask]
+        
+        is_foot_in_contact = torch.norm(active_feet_forces, dim=-1) > contact_sensor.cfg.force_threshold
+        values = torch.mean(is_foot_in_contact.float(), dim=-1)
+        computed_values = _apply_kernel(values, kernel, scale, delta, e_max)
+        reward_tensor[active_mask] = computed_values
     
     return reward_tensor
     
-def landing_com_accel(env: ManagerBasedRLEnv) -> torch.Tensor:
-    """Penalize excessive center of mass acceleration during landing phase.
+def feet_ground_impact_force(env: ManagerBasedRLEnv, 
+                            phases: list[Phase] = None,
+                            kernel: Kernel = Kernel.EXPONENTIAL,
+                            scale: float = 1.0,
+                            delta: float = 1.0,
+                            e_max: float = 1.0) -> torch.Tensor:
+    """Reward the robot for landing with low impact force on the feet."""
+    if phases is None:
+        phases = [Phase.LANDING]
     
-    This reward encourages smooth landings by penalizing high accelerations
-    of the robot's center of mass during the landing phase.
+    active_mask = _get_active_envs_mask(env, phases)
+    reward_tensor = _init_reward_tensor(env)
     
-    Args:
-        env: Environment instance
+    if torch.any(active_mask):
+        contact_sensor: ContactSensor = env.scene[SceneEntityCfg("contact_sensor").name] 
+        feet_idx, _ = env.robot.find_bodies(".*FOOT.*")
         
-    Returns:
-        Tensor of shape (num_envs,) containing acceleration penalties
+        all_forces = contact_sensor.data.net_forces_w[:, feet_idx]
+        active_forces = all_forces[active_mask]
         
-    Note:
-        The acceleration is computed using finite differences from velocity data.
-        Some acceleration is expected during landing due to impact forces.
-    """
-    reward_tensor = torch.zeros(env.num_envs, device=env.device)
-    landing_envs = env.jump_phase == Phase.LANDING
-    
-    if not torch.any(landing_envs):
-        return reward_tensor
-    
-    # Get current and previous center of mass velocities
-    current_com_vel = get_center_of_mass_lin_vel(env)[landing_envs]
-    
-    # Estimate acceleration using finite differences (requires velocity history)
-    if hasattr(env, 'prev_com_vel') and env.prev_com_vel is not None:
-        prev_com_vel = env.prev_com_vel[landing_envs]
-        dt = env.physics_dt if hasattr(env, 'physics_dt') else 1/60  # Default to 60Hz
-        
-        # Calculate acceleration magnitude
-        com_accel = (current_com_vel - prev_com_vel) / dt
-        accel_magnitude = torch.norm(com_accel, dim=-1)
-        
-        # Penalize high accelerations (landing will naturally have some acceleration)
-        # Use a reasonable threshold for "excessive" acceleration
-        accel_threshold = 20.0  # m/s^2 (roughly 2g)
-        excess_accel = torch.clamp(accel_magnitude - accel_threshold, min=0.0)
-        
-        reward_tensor[landing_envs] = -excess_accel  # Negative reward for penalty
-    
-    # Store current velocity for next step
-    env.prev_com_vel = get_center_of_mass_lin_vel(env).clone()
-    
-    return reward_tensor
-    
-def feet_ground_impact_force(env: ManagerBasedRLEnv) -> torch.Tensor:
-    """ Reward the robot for landing with low impact force on the feet.
-    
-    The reward is calculated as:
-    r = exp(-||f||²)
-    
-    where ||f|| is the L2 norm of the impact force on the feet over the landing phase.
-    - Zero force → reward of 1.0
-    - High force → reward approaches 0.0
-    """
-    landing_envs = env.jump_phase == Phase.LANDING
-    contact_sensor: ContactSensor = env.scene[SceneEntityCfg("contact_forces").name]
-    feet_idx, _ = env.robot.find_bodies(".*FOOT.*")
-    forces = contact_sensor.data.net_forces_w[landing_envs, feet_idx] 
-    force_norm = torch.norm(forces, dim=-1)
-    
-    reward_tensor = torch.zeros(env.num_envs, device=env.device)
-    reward_tensor[landing_envs] = torch.exp(-torch.square(force_norm)) #TODO: consider changing the reward shaping. Want to avoid the exponentail function "hidding" peaks
+        foot_force_norms = torch.norm(active_forces, dim=-1)
+        values = torch.sum(torch.square(foot_force_norms), dim=-1)
+        computed_values = torch.exp(-values)  # Using the original exponential formula
+        reward_tensor[active_mask] = computed_values
     
     return reward_tensor
     
@@ -633,163 +353,35 @@ def takeoff_angle_error(env: ManagerBasedRLEnv, scale: float | int = 1.0) -> tor
     if not torch.any(takeoff_mask):
         return reward
 
-    # Extract commanded and actual velocities for takeoff envs
     takeoff_env_ids = takeoff_mask.nonzero(as_tuple=False).squeeze(-1)
     takeoff_vector = _get_dynamic_takeoff_vector(env, takeoff_env_ids)         # [M,3]
-    act_vec = get_center_of_mass_lin_vel(env)[takeoff_mask]    # [M,3]
+    act_vec = env.center_of_mass_lin_vel[takeoff_mask]    # [M,3]
 
-    # Compute norms
     takeoff_vector_norm = takeoff_vector.norm(dim=1)     # [M]
     act_norm = act_vec.norm(dim=1)     # [M]
 
-    # Mask for sufficient velocity magnitude
     valid = act_norm >= 0.5 * takeoff_vector_norm  # [M]
 
     # Normalize vectors (avoid division by zero)
     takeoff_vector_unit = takeoff_vector / takeoff_vector_norm.clamp(min=1e-6).unsqueeze(1)  # [M,3]
     act_unit = act_vec / act_norm.clamp(min=1e-6).unsqueeze(1)  # [M,3]
 
-    # Compute angle error
     dot = (takeoff_vector_unit * act_unit).sum(dim=1).clamp(-1.0, 1.0)      # [M]
     angle_err = torch.acos(dot)                                # [M]
 
-    # Exponential scaling and apply validity mask
     scaled_err = torch.exp(-scale * angle_err) * valid.to(torch.float32)  # [M]
 
-    # Assign back to the global reward tensor
     reward[takeoff_mask] = scaled_err
     return reward
 
-def feet_air_time(
-    env: ManagerBasedRLEnv, command_name: str, sensor_cfg: SceneEntityCfg, threshold: float
-) -> torch.Tensor:
-    """Reward long steps taken by the feet using L2-kernel.
-
-    This function rewards the agent for taking steps that are longer than a threshold. This helps ensure
-    that the robot lifts its feet off the ground and takes steps. The reward is computed as the sum of
-    the time for which the feet are in the air.
-
-    If the commands are small (i.e. the agent is not supposed to take a step), then the reward is zero.
-    """
-    # extract the used quantities (to enable type-hinting)
-    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
-    # compute the reward
-    first_contact = contact_sensor.compute_first_contact(env.step_dt)[:, sensor_cfg.body_ids]
-    last_air_time = contact_sensor.data.last_air_time[:, sensor_cfg.body_ids]
-    reward = torch.sum((last_air_time - threshold) * first_contact, dim=1)
- 
-    return reward
-
-def quaternion_logarithm(q_rel: torch.Tensor) -> torch.Tensor:
-    """Calculate quaternion logarithm using numerically stable approach.
-    
-    The quaternion logarithm maps unit quaternions to rotation vectors.
-    For a unit quaternion q = [w, x, y, z], the logarithm is:
-    log(q) = arccos(w) * [x, y, z] / ||[x, y, z]||
-    
-    Args:
-        q_rel: Relative quaternion tensor of shape (..., 4) in [w, x, y, z] format
-        
-    Returns:
-        Rotation vector tensor of shape (..., 3)
-        
-    Note:
-        This implementation is numerically stable for small angles and handles
-        the singularity when the quaternion represents no rotation.
-    """
-    assert q_rel.shape[-1] == 4, "Quaternion must have 4 components [w, x, y, z]"
-    
-    # Ensure quaternions are normalized (unit quaternions)
-    q_rel = q_rel / torch.norm(q_rel, dim=-1, keepdim=True)
-    
-    scalar_part = q_rel[..., 0:1]  # w component
-    vector_part = q_rel[..., 1:]   # [x, y, z] components
-    
-    # Clamp scalar part to avoid numerical issues with arccos
-    scalar_clamped = torch.clamp(scalar_part, min=-1.0, max=1.0)
-    
-    # Calculate angle (half-angle of rotation)
-    half_angle = torch.acos(torch.abs(scalar_clamped))
-    
-    # Calculate vector norm
-    vector_norm = torch.norm(vector_part, dim=-1, keepdim=True)
-    
-    # For small rotations (vector_norm ≈ 0), use Taylor expansion: log(q) ≈ vector_part
-    # For larger rotations, use the full formula: log(q) = angle * vector_part / vector_norm
-    small_angle_threshold = 1e-6
-    
-    # Use the sign of scalar part to determine direction
-    sign = torch.sign(scalar_part)
-    
-    log_q = torch.where(
-        vector_norm > small_angle_threshold,
-        sign * half_angle * (vector_part / vector_norm),
-        sign * vector_part  # Taylor approximation for small angles
-    )
-    
-    return log_q
-
-def feet_slide(env, sensor_cfg: SceneEntityCfg, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
-    """Penalize feet sliding during ground contact.
-
-    This function penalizes sliding of the feet when they are in contact with the ground.
-    The penalty is computed as the horizontal velocity magnitude of the feet weighted by
-    the contact forces, encouraging the robot to minimize foot slippage.
-    
-    Args:
-        env: Environment instance
-        sensor_cfg: Configuration for the contact sensor
-        asset_cfg: Configuration for the robot asset
-        
-    Returns:
-        Tensor of shape (num_envs,) containing sliding penalties for each environment
-    """
-    # Get contact sensor and forces
-    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
-    contact_forces = contact_sensor.data.net_forces_w[:, sensor_cfg.body_ids, :]
-    
-    # Determine which feet are in contact (using force threshold)
-    force_threshold = 1.0  # N
-    in_contact = torch.norm(contact_forces, dim=-1) > force_threshold
-    
-    # Get robot asset and foot velocities
-    asset = env.scene[asset_cfg.name]
-    
-    # Get horizontal (x-y) velocities of the feet
-    foot_velocities = asset.data.body_lin_vel_w[:, asset_cfg.body_ids, :2]  # Only x-y components
-    foot_speed = torch.norm(foot_velocities, dim=-1)
-    
-    # Calculate sliding penalty: horizontal speed weighted by contact
-    sliding_penalty = torch.sum(foot_speed * in_contact.float(), dim=-1)
-    
-    return sliding_penalty
-
-def is_alive(env: ManagerBasedRLEnv, phases: list[Phase] = [Phase.LANDING]) -> torch.Tensor:
-    """Reward for being alive during the specified phases"""
-    # Initialize as boolean tensor
-    active_envs = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
-    for phase in phases:
-        active_envs |= env.jump_phase == phase
-
-    # Check if any environment is in the target phases
-    if torch.any(active_envs):
-        # Reward is 1 for active envs that are not terminated, 0 otherwise
-        return (active_envs & (~env.termination_manager.terminated)).float()
-    # Return zeros if no environments are in the target phases
-    return torch.zeros(env.num_envs, device=env.device)
-
-def liftoff_vertical_velocity(env: MarsJumperEnv, shape: str = "linear") -> torch.Tensor:
+def liftoff_vertical_velocity(env: ManagerBasedRLEnv, shape: str = "linear") -> torch.Tensor:
     """Reward vertical velocity at the exact moment of transition from TAKEOFF to FLIGHT phase."""
-    # Identify environments that transitioned from TAKEOFF to FLIGHT in this step
     transitioned_to_flight = (env.prev_jump_phase == Phase.TAKEOFF) & (env.jump_phase == Phase.FLIGHT)
 
     reward = torch.zeros(env.num_envs, device=env.device)
 
-    # Only calculate and apply reward for environments that just transitioned
     if torch.any(transitioned_to_flight):
-        # Extract upward velocity component for transitioning environments
         upward_vel = env.robot.data.root_lin_vel_w[transitioned_to_flight, 2]
-        # Apply reward based on velocity (clamp negative values)
         liftoff_reward = torch.clamp(upward_vel, min=0.0)
 
         if shape == "square":
@@ -799,18 +391,41 @@ def liftoff_vertical_velocity(env: MarsJumperEnv, shape: str = "linear") -> torc
 
     return reward
 
-def attitude_error_on_way_down(env: ManagerBasedRLEnv, scale: float | int = 1.0) -> torch.Tensor:
-    """Rewards for no attitude rotation for robot in flight phase when going downwards. Uses inverse quadratic kernel."""
-    reward_tensor = torch.zeros(env.num_envs, device=env.device)
-    flight_envs = env.jump_phase == Phase.FLIGHT
-    reward_envs = flight_envs & (get_center_of_mass_lin_vel(env)[:, 2] < 0.01)
-    quat = env.robot.data.root_quat_w[reward_envs]
-    w = quat[:, 0]
-    angle = 2 * torch.acos(torch.clamp(w, min=-1.0, max=1.0))
-    reward_tensor[reward_envs] = 1/(1 + scale * torch.abs(angle)**2)
+def attitude_error_on_way_down(env: ManagerBasedRLEnv, 
+                               phases: list[Phase] = None,
+                               kernel: Kernel = Kernel.INVERSE_LINEAR,
+                               scale: float = 1.0,
+                               delta: float = 1.0,
+                               e_max: float = 1.0) -> torch.Tensor:
+    """Rewards for no attitude rotation for robot in flight phase when going downwards."""
+    if phases is None:
+        phases = [Phase.FLIGHT]
+    
+    active_mask = _get_active_envs_mask(env, phases)
+    reward_tensor = _init_reward_tensor(env)
+    
+    if not torch.any(active_mask):
+        return reward_tensor
+    
+    rewards_for_flight_phase = torch.zeros(torch.sum(active_mask), device=env.device)
+
+    com_vel_flight_envs = env.center_of_mass_lin_vel[active_mask]
+    actually_reward_mask_within_flight = com_vel_flight_envs[:, 2] < 0.01
+
+    if torch.any(actually_reward_mask_within_flight):
+        quat = env.robot.data.root_quat_w[active_mask][actually_reward_mask_within_flight]
+        w = quat[:, 0]
+        angle = 2 * torch.acos(torch.clamp(w, min=-1.0, max=1.0))
+        angle = torch.abs(angle)
+
+        # Apply kernel
+        kernel_values = _apply_kernel(angle, kernel, scale, delta, e_max)
+        rewards_for_flight_phase[actually_reward_mask_within_flight] = kernel_values
+    
+    reward_tensor[active_mask] = rewards_for_flight_phase
     return reward_tensor
 
-def attitude_at_landing(env: ManagerBasedRLEnv, scale: float | int = 1.0) -> torch.Tensor:
+def attitude_at_transition_to_landing(env: ManagerBasedRLEnv, scale: float | int = 1.0) -> torch.Tensor:
     """Rewards for no attitude rotation for robot at transition to landing. Uses inverse quadratic kernel."""
     reward_tensor = torch.zeros(env.num_envs, device=env.device)
     reward_envs = (env.jump_phase == Phase.LANDING) & (env.prev_jump_phase == Phase.FLIGHT)
@@ -820,73 +435,28 @@ def attitude_at_landing(env: ManagerBasedRLEnv, scale: float | int = 1.0) -> tor
     reward_tensor[reward_envs] = 1/(1 + scale * torch.abs(angle)**2)
     return reward_tensor
 
-def attitude_rotation_magnitude(env: ManagerBasedRLEnv, kernel: str = "inverse_linear", scale: float | int = 1.0, phases: list[Phase] = [Phase.FLIGHT]) -> torch.Tensor:
-    """Penalize any rotation from upright orientation using rotation vector magnitude.
+def attitude_error(env: ManagerBasedRLEnv, 
+                   phases: list[Phase] = None,
+                   kernel: Kernel = Kernel.INVERSE_LINEAR,
+                   scale: float = 1.0,
+                   delta: float = 1.0,
+                   e_max: float = 1.0) -> torch.Tensor:
+    """Penalize any rotation from upright orientation using rotation vector magnitude."""
+    if phases is None:
+        phases = [Phase.FLIGHT]
     
-    The rotation vector magnitude represents the total rotation angle in radians.
-    For an upright robot, this should be 0. Returns values in [0,1] where:
-    - 0 rotation -> reward of 1.0  
-    - Large rotation -> reward approaches 0.0
-    """
-    reward_tensor = torch.zeros(env.num_envs, device=env.device)
-    active_envs = torch.zeros(env.num_envs, device=env.device)
-    for phase in phases:
-        active_envs = torch.logical_or(active_envs, env.jump_phase == phase)
-    quat = env.robot.data.root_quat_w[active_envs]
+    active_mask = _get_active_envs_mask(env, phases)
+    reward_tensor = _init_reward_tensor(env)
     
-    # Convert quaternion to rotation vector (axis-angle)
-    # For quaternion q = [w,x,y,z], rotation vector = 2*arccos(w)*[x,y,z]/sqrt(1-w^2)
-    w = quat[:, 0]
-    xyz = quat[:, 1:]
-    angle = 2 * torch.acos(torch.clamp(w, min=-1.0, max=1.0))
-    angle = torch.abs(angle)
-    
-    # Return exponential of negative rotation magnitude to bound between [0,1]
-    if kernel == "inverse_linear":
-        reward_tensor[active_envs] = 1 / (1 + scale * angle)
-    elif kernel == "inverse_quadratic":
-        reward_tensor[active_envs] = 1 / (1 + scale * angle**2)
-    elif kernel == "exponential":
-        reward_tensor[active_envs] = torch.exp(-scale * angle)
-    elif kernel == "square":
-        reward_tensor[active_envs] = torch.square(angle)
-    elif kernel == "linear":
-        reward_tensor[active_envs] = torch.abs(angle)
-    else:
-        raise ValueError(f"Invalid kernel: {kernel}")
+    if torch.any(active_mask):
+        quat = env.robot.data.root_quat_w[active_mask]
+        w = quat[:, 0]
+        angle = 2 * torch.acos(torch.clamp(w, min=-1.0, max=1.0))
+        values = torch.abs(angle)
+        computed_values = _apply_kernel(values, kernel, scale, delta, e_max)
+        reward_tensor[active_mask] = computed_values
     
     return reward_tensor
-
-def _get_dynamic_takeoff_vector(env: ManagerBasedRLEnv, env_ids: Sequence[int]) -> torch.Tensor:
-    """Helper function to get the dynamic takeoff vector based on current COM position.
-    
-    Args:
-        env: Environment instance with target_height and target_length attributes
-        env_ids: Environment indices to calculate for
-        
-    Returns:
-        Tensor of shape (len(env_ids), 3) containing [x, y, z] velocity components
-    """
-    from terms.utils import get_dynamic_takeoff_vector
-    return get_dynamic_takeoff_vector(env, env_ids)
-
-def _get_command_as_pitch_magnitude(env: ManagerBasedRLEnv, env_ids: Sequence[int]) -> torch.Tensor:
-    """Helper function to convert target_height and target_length to pitch/magnitude format.
-    
-    NOTE: This function is kept for backward compatibility but should be replaced with 
-    _get_dynamic_takeoff_vector for position-aware calculations.
-    
-    Args:
-        env: Environment instance with target_height and target_length attributes
-        env_ids: Environment indices to convert
-        
-    Returns:
-        Tensor of shape (len(env_ids), 2) containing [pitch, magnitude]
-    """
-    height = env.target_height[env_ids]
-    length = env.target_length[env_ids]
-    pitch, magnitude = convert_height_length_to_pitch_magnitude(height, length, gravity=9.81)
-    return torch.stack([pitch, magnitude], dim=-1)
 
 def relative_cmd_error_huber(env: ManagerBasedRLEnv, delta: float, e_max: float) -> torch.Tensor:
     """Shifted huber kernel for reward. Applies a quadratic penalty for small errors and a linear penalty for large errors
@@ -901,13 +471,11 @@ def relative_cmd_error_huber(env: ManagerBasedRLEnv, delta: float, e_max: float)
     
     takeoff_env_ids = takeoff_envs.nonzero(as_tuple=False).squeeze(-1)
     takeoff_vector = _get_dynamic_takeoff_vector(env, takeoff_env_ids)
-    robot_vel_vec = get_center_of_mass_lin_vel(env)
     reward_tensor = torch.zeros(env.num_envs, device=env.device)
-    relative_error = torch.norm(robot_vel_vec - takeoff_vector, dim=-1) / torch.norm(takeoff_vector, dim=-1)
+    relative_error = torch.norm(env.center_of_mass_lin_vel - takeoff_vector, dim=-1) / torch.norm(takeoff_vector, dim=-1)
     reward_tensor[takeoff_envs] = shifted_huber_kernel(e=relative_error, delta=delta, e_max=e_max)[takeoff_envs]
 
-    # Check vertical velocity (assuming index 2 is vertical)
-    vertical_velocity = robot_vel_vec[:, 2]
+    vertical_velocity = env.center_of_mass_lin_vel[:, 2]
     downward_mask = vertical_velocity < 0
 
     reward_tensor[downward_mask] = 0    
@@ -915,138 +483,84 @@ def relative_cmd_error_huber(env: ManagerBasedRLEnv, delta: float, e_max: float)
 
 def attitude_penalty_takeoff_threshold(
     env: ManagerBasedRLEnv, 
+    phases: list[Phase] = None,
+    kernel: Kernel = Kernel.LINEAR,
+    scale: float = 1.0,
+    delta: float = 1.0,
+    e_max: float = 1.0,
     threshold_deg: float | int = 10.0
 ) -> torch.Tensor:
-    """Penalize attitude rotation during takeoff only when it exceeds a threshold.
+    """Penalize attitude rotation during takeoff only when it exceeds a threshold."""
+    if phases is None:
+        phases = [Phase.TAKEOFF]
     
-    This function helps prevent gaming where the robot twists excessively during takeoff
-    to maintain ground contact while still being rewarded. Only applies penalty when
-    rotation exceeds the specified threshold.
+    active_mask = _get_active_envs_mask(env, phases)
+    reward_tensor = _init_reward_tensor(env)
     
-    Args:
-        env: Environment instance
-        threshold_deg: Threshold in degrees above which penalty is applied
+    if torch.any(active_mask):
+        quat = env.robot.data.root_quat_w[active_mask]
+        w = quat[:, 0]
         
-    Returns:
-        Tensor of shape (num_envs,) containing excess rotation in radians (use negative weight in config)
-    """
-    reward_tensor = torch.zeros(env.num_envs, device=env.device)
+        angle_rad = 2 * torch.acos(torch.clamp(torch.abs(w), min=0.0, max=1.0))
+        threshold_rad = torch.deg2rad(torch.tensor(threshold_deg, device=env.device, dtype=angle_rad.dtype))
+        
+        values = torch.clamp(angle_rad - threshold_rad, min=0.0)
+        computed_values = _apply_kernel(values, kernel, scale, delta, e_max)
+        reward_tensor[active_mask] = computed_values
     
-    # Only active during takeoff phase
-    takeoff_envs = env.jump_phase == Phase.TAKEOFF
-    if not torch.any(takeoff_envs):
-        return reward_tensor
-    
-    # Get quaternion and calculate rotation magnitude
-    quat = env.robot.data.root_quat_w[takeoff_envs]
-    w = quat[:, 0]
-    
-    # Calculate rotation angle magnitude
-    angle = 2 * torch.acos(torch.clamp(torch.abs(w), min=0.0, max=1.0))
-    
-    # Only apply penalty for rotations above threshold
-    excess_rotation = torch.clamp(angle - threshold_deg, min=0.0)
-
-    reward_tensor[takeoff_envs] = excess_rotation
     return reward_tensor
 
 def feet_near_ground_reward(env: ManagerBasedRLEnv, 
+                           phases: list[Phase] = None,
+                           kernel: Kernel = Kernel.LINEAR,
+                           scale: float = 1.0,
+                           delta: float = 1.0,
+                           e_max: float = 1.0,
                            height_threshold: float = 0.02,
-                           ground_height: float = 0.0,
-                           phases: list[Phase] = [Phase.LANDING]) -> torch.Tensor:
-    """Reward for each foot that is within a height threshold of the ground.
+                           ground_height: float = 0.0
+                           ) -> torch.Tensor:
+    """Reward for each foot that is within a height threshold of the ground."""
+    if phases is None:
+        phases = [Phase.LANDING]
     
-    This encourages the robot to stand properly after landing by rewarding
-    feet that are close to the ground surface. Returns average reward across all feet.
+    active_mask = _get_active_envs_mask(env, phases)
+    reward_tensor = _init_reward_tensor(env)
     
-    Args:
-        env: Environment instance
-        height_threshold: Maximum height above ground to receive reward (in meters)
-        ground_height: Height of the ground plane (in meters)
-        phases: List of phases during which this reward is active
+    if torch.any(active_mask):
+        feet_idx, _ = env.robot.find_bodies(".*FOOT.*")
+        feet_positions = env.robot.data.body_pos_w[active_mask, :, :][:, feet_idx, :] 
         
-    Returns:
-        Tensor of shape (num_envs,) with reward values (0 to 1, representing fraction of feet near ground)
-    """
-    # Check if any environment is in the target phases
-    active_envs = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
-    for phase in phases:
-        active_envs |= (env.jump_phase == phase)
-    
-    reward_tensor = torch.zeros(env.num_envs, device=env.device)
-    
-    if not torch.any(active_envs):
-        return reward_tensor
-    
-    # Get foot body indices and positions
-    feet_idx, _ = env.robot.find_bodies(".*FOOT.*")
-    feet_positions = env.robot.data.body_pos_w[:, feet_idx, :]  # Shape: (num_envs, num_feet, 3)
-    
-    # Get feet heights above ground
-    feet_heights = feet_positions[:, :, 2] - ground_height  # Shape: (num_envs, num_feet)
-    
-    # Check which feet are within threshold (and above ground)
-    feet_near_ground = (feet_heights >= 0) & (feet_heights <= height_threshold)  # Shape: (num_envs, num_feet)
-    
-    # Calculate reward: average over all feet (gives value between 0 and 1)
-    feet_reward = torch.mean(feet_near_ground.float(), dim=-1)  # Shape: (num_envs,)
-    
-    # Apply only to active environments
-    reward_tensor[active_envs] = feet_reward[active_envs]
+        feet_heights = feet_positions[:, :, 2] - ground_height
+        feet_near_ground = (feet_heights >= 0) & (feet_heights <= height_threshold)
+        values = torch.mean(feet_near_ground.float(), dim=-1)
+        computed_values = _apply_kernel(values, kernel, scale, delta, e_max)
+        reward_tensor[active_mask] = computed_values
     
     return reward_tensor
 
 def feet_height_penalty(env: ManagerBasedRLEnv,
-                       ground_height: float = 0.0,
-                       phases: list[Phase] = [Phase.LANDING],
-                       kernel: Kernel = Kernel.LINEAR) -> torch.Tensor:
-    """Penalize feet that are far from the ground based on their height.
+                       phases: list[Phase] = None,
+                       kernel: Kernel = Kernel.LINEAR,
+                       scale: float = 1.0,
+                       delta: float = 1.0,
+                       e_max: float = 1.0,
+                       ground_height: float = 0.0
+                       ) -> torch.Tensor:
+    """Penalize feet that are far from the ground based on their height."""
+    if phases is None:
+        phases = [Phase.LANDING]
     
-    This encourages the robot to keep its feet close to the ground surface
-    by penalizing the vertical distance from ground. Use negative weight in config.
+    active_mask = _get_active_envs_mask(env, phases)
+    reward_tensor = _init_reward_tensor(env)
     
-    Args:
-        env: Environment instance
-        ground_height: Height of the ground plane (in meters)
-        phases: List of phases during which this penalty is active
-        kernel: Type of penalty kernel (LINEAR or SQUARE)
+    if torch.any(active_mask):
+        feet_idx, _ = env.robot.find_bodies(".*FOOT.*")
+        feet_positions = env.robot.data.body_pos_w[active_mask, :, :][:, feet_idx, :] 
         
-    Returns:
-        Tensor of shape (num_envs,) with penalty values (use negative weight in config)
-    """
-    # Check if any environment is in the target phases
-    active_envs = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
-    for phase in phases:
-        active_envs |= (env.jump_phase == phase)
+        feet_heights = feet_positions[:, :, 2] - ground_height
+        values = torch.sum(torch.clamp(feet_heights, min=0.0), dim=-1)
+        computed_values = _apply_kernel(values, kernel, scale, delta, e_max)
+        reward_tensor[active_mask] = computed_values
     
-    penalty_tensor = torch.zeros(env.num_envs, device=env.device)
-    
-    if not torch.any(active_envs):
-        return penalty_tensor
-    
-    # Get foot body indices and positions
-    feet_idx, _ = env.robot.find_bodies(".*FOOT.*")
-    feet_positions = env.robot.data.body_pos_w[:, feet_idx, :]  # Shape: (num_envs, num_feet, 3)
-    
-    # Get feet heights above ground
-    feet_heights = feet_positions[:, :, 2] - ground_height  # Shape: (num_envs, num_feet)
-    
-    # Only penalize positive heights (feet above ground)
-    feet_heights_above_ground = torch.clamp(feet_heights, min=0.0)  # Shape: (num_envs, num_feet)
-    
-    # Apply kernel
-    if kernel == Kernel.LINEAR:
-        feet_penalties = feet_heights_above_ground  # Linear penalty
-    elif kernel == Kernel.SQUARE:
-        feet_penalties = torch.square(feet_heights_above_ground)  # Quadratic penalty
-    else:
-        raise ValueError(f"Unsupported kernel: {kernel}")
-    
-    # Sum penalties across all feet
-    total_penalty = torch.sum(feet_penalties, dim=-1)  # Shape: (num_envs,)
-    
-    # Apply only to active environments
-    penalty_tensor[active_envs] = total_penalty[active_envs]
-    
-    return penalty_tensor
+    return reward_tensor
 

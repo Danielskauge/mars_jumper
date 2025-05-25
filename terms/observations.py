@@ -8,23 +8,14 @@
 from __future__ import annotations
 
 import math
-from typing import TYPE_CHECKING
 
-from numpy import indices
 from isaaclab.assets.articulation.articulation import Articulation
 from isaaclab.managers.scene_entity_cfg import SceneEntityCfg
-from terms.phase import Phase
+from terms.utils import Phase
 import torch
 import isaaclab.utils.math as math_utils
-from terms.utils import get_center_of_mass_lin_vel
+from isaaclab.envs import ManagerBasedEnv, ManagerBasedRLEnv
 
-if TYPE_CHECKING:
-    from isaaclab.envs import ManagerBasedEnv, ManagerBasedRLEnv
-
-def center_of_mass_lin_vel(env: ManagerBasedEnv) -> torch.Tensor:
-    """Observation that returns the center of mass linear velocity.
-    """
-    return get_center_of_mass_lin_vel(env)
 
 def has_taken_off(
     env: ManagerBasedEnv, 
@@ -108,28 +99,3 @@ def takeoff_height_length_cmd(
     
     # Directly return the height and length targets
     return torch.stack([env.target_height, env.target_length], dim=-1)
-
-def dynamic_takeoff_vector_cmd(
-    env: ManagerBasedRLEnv,
-) -> torch.Tensor:
-    """Observation that returns the dynamic takeoff velocity vector command.
-    
-    This function provides the required takeoff velocity vector continuously updated
-    based on the robot's current center of mass position and target trajectory.
-    
-    Args:
-        env: The environment instance.
-        
-    Returns:
-        A tensor of shape (num_envs, 3) with the dynamic takeoff velocity vector [x, y, z]
-    """
-    # During observation manager initialization, command might not be fully set up
-    if not hasattr(env, "target_height") or not hasattr(env, "target_length"):
-        # Return a dummy tensor with the expected shape (num_envs, 3)
-        return torch.zeros((env.num_envs, 3), device=env.device)
-    
-    # Get the dynamic takeoff vector for all environments
-    from terms.utils import get_dynamic_takeoff_vector
-    return get_dynamic_takeoff_vector(env, env_ids=None)
-
-

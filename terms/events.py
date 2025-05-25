@@ -1,28 +1,18 @@
-# Copyright (c) 2022-2025, The Isaac Lab Project Developers.
-# All rights reserved.
-#
-# SPDX-License-Identifier: BSD-3-Clause
 
 """Custom event functions for the Mars Jumper environment."""
 
 from __future__ import annotations
-
-import math
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Tuple
-
 import numpy as np
 from isaaclab.envs.mdp.events import reset_scene_to_default, reset_joints_by_offset, reset_root_state_uniform
-from terms.phase import Phase
+from terms.utils import Phase
 import torch
-from terms.utils import convert_command_to_euclidean_vector, convert_height_length_to_pitch_magnitude
-
+from terms.utils import convert_height_length_to_pitch_magnitude, convert_pitch_magnitude_to_vector
 from isaaclab.utils.math import sample_uniform, quat_from_euler_xyz
 import isaaclab.utils.math as math_utils
-from torch import Tensor
 from typing import Dict
-if TYPE_CHECKING:
-    from isaaclab.envs import ManagerBasedRLEnv
+from isaaclab.envs import ManagerBasedRLEnv
 from reset_crouch import sample_robot_crouch_pose
     
 def reset_robot_pre_landing_state(env: ManagerBasedRLEnv, 
@@ -135,8 +125,7 @@ def init_robot_in_flight_phase(env: ManagerBasedRLEnv,
     height = env.target_height[env_ids]
     length = env.target_length[env_ids]
     pitch, magnitude = convert_height_length_to_pitch_magnitude(height, length, gravity=9.81)
-    cmd_vel_polar = torch.stack([pitch, magnitude], dim=-1) # Shape: (num_envs, 2) -> [pitch, magnitude]
-    cmd_vel_cartesian = convert_command_to_euclidean_vector(cmd_vel_polar) # Shape: (num_envs, 2)
+    cmd_vel_cartesian = convert_pitch_magnitude_to_vector(pitch, magnitude) # Shape: (num_envs, 3)
     
     x_dot_0 = cmd_vel_cartesian[:, 0] # Shape: (num_envs)
     z_dot_0 = cmd_vel_cartesian[:, 2] # Shape: (num_envs)

@@ -10,15 +10,13 @@ from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sensors import ContactSensorCfg
 from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.utils import configclass
-from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
 from isaaclab.envs import mdp
 from isaaclab.envs.common import ViewerCfg
 from terms import rewards, events, curriculums, observations, terminations
 from robot.robot_cfg import MarsJumperRobotCfg
-from terms.phase import Phase
-from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR, ISAACLAB_NUCLEUS_DIR
-
+from terms.utils import Phase
+from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 
 MAX_EPISODE_LENGTH_S = 3.0
 DEG2RAD = np.pi/180
@@ -36,8 +34,8 @@ class CommandRangesCfg:
     # New primary interface: heighte and length ranges
     # Pitch 45deg from vertical is equivalent to H = 0.25L, which is the shallowest jump within the friction cone for a friction coefficient of 1. Thus <45deg might be optimal.
 
-    min_target_length = 0.5  # m  
-    max_target_length = 0.6  # m
+    min_target_length = 0.0  # m  
+    max_target_length = 0.7  # m
 
     min_target_height = 0.2  # m
     max_target_height = 0.5  # m
@@ -110,8 +108,57 @@ class EventCfg:
         "hind_foot_x_offset_range_cm": (0, 0), # Restored variation from (0, 0)
         "base_vertical_vel_range": (-0, 0),  # Range for sampling base vertical velocity in m/s
     })
+
 @configclass
 class RewardsCfg:
+    relative_cmd_error = RewardTermCfg(func=rewards.cmd_error,
+                                       params={"kernel": rewards.Kernel.EXPONENTIAL,
+                                               "scale": 7.0},
+                                       weight=30.0, 
+    )
+    
+    # liftoff_relative_cmd_error = RewardTermCfg( # Sparse reward at the moment of liftoff
+    # func=rewards.liftoff_relative_cmd_error,
+    # params={"kernel": rewards.Kernel.EXPONENTIAL,
+    #         "scale": 7.0}, 
+    # weight=100.0, 
+    # )
+    
+    attitude_error_on_way_down = RewardTermCfg(func=rewards.attitude_error_on_way_down, 
+                                              params={"scale": 5.0,
+                                                      "kernel": rewards.Kernel.INVERSE_LINEAR,
+                                                      "phases": [Phase.FLIGHT]},
+                                              weight=0.8)
+    
+    attitude_rotation_flight = RewardTermCfg(func=rewards.attitude_error, 
+                                      params={"kernel": rewards.Kernel.INVERSE_SQUARE, 
+                                              "scale": 5.0,
+                                              "phases": [Phase.FLIGHT]},
+                                      weight=0.08)
+    
+    # is_terminated = RewardTermCfg(func=mdp.is_terminated_term, weight= -2, params={"term_keys": ["bad_orientation_takeoff", 
+    #                                                                                              "bad_yaw_takeoff",
+    #                                                                                              "bad_orientation_flight",
+    #                                                                                              "bad_yaw_flight",
+    #                                                                                              "bad_roll_takeoff",
+    #                                                                                              "bad_roll_flight",
+    #                                                                                              "failed_to_reach_target_height",
+    #                                                                                              "walking"
+    #                                                                                              ]})
+    
+    # dof_pos_limits = RewardTermCfg(func=mdp.joint_pos_limits, 
+    #                                weight=-0.01)
+
+    # contact_forces = RewardTermCfg(func=rewards.contact_forces,
+    #                                    weight=-0.0001,
+    #                                    params={
+    #                                        "kernel": rewards.Kernel.LINEAR,
+    #                                        "phases": [Phase.LANDING, Phase.TAKEOFF, Phase.FLIGHT]})
+    
+    # action_rate_l2 = RewardTermCfg(func=mdp.action_rate_l2,
+    #                                weight=-0.001)
+    
+    
     
     # absolute_cmd_error = RewardTermCfg(func=rewards.cmd_error,
     #                                    params={"scale": 7/2.2, 
@@ -119,11 +166,7 @@ class RewardsCfg:
     #                                    weight=10.0,
     # )
 
-    relative_cmd_error = RewardTermCfg(func=rewards.relative_cmd_error, # Dense reward during TAKEOFF
-                                       params={"scale": 7.0, 
-                                               "kernel": rewards.Kernel.EXPONENTIAL},
-                                       weight=30.0, 
-    )
+
     
     # takeoff_excess_rotation = RewardTermCfg(func=rewards.attitude_penalty_takeoff_threshold,
     #                                         params={"threshold_deg": 30},
@@ -134,12 +177,7 @@ class RewardsCfg:
     #                                         weight=4.0,                # Use weight to control magnitude
     # )
 
-    # liftoff_relative_cmd_error = RewardTermCfg( # Sparse reward at the moment of liftoff
-    #     func=rewards.liftoff_relative_cmd_error,
-    #     params={"kernel": rewards.Kernel.EXPONENTIAL,
-    #             "scale": 7.0}, 
-    #     weight=90.0, 
-    # )
+
     
     # takeoff_angle_error = RewardTermCfg(func=rewards.takeoff_angle_error,
     #                                    params={"scale": 3.0},
@@ -160,16 +198,7 @@ class RewardsCfg:
     #                                           "phases": [Phase.TAKEOFF]},
     #                                   weight=0.01)
     
-    attitude_error_on_way_down = RewardTermCfg(func=rewards.attitude_error_on_way_down, 
-                                              params={"scale": 5.0},
-                                              weight=0.5)
-    
-    attitude_rotation_flight = RewardTermCfg(func=rewards.attitude_rotation_magnitude, 
-                                      params={"kernel": "inverse_quadratic", 
-                                              "scale": 5.0,
-                                              "phases": [Phase.FLIGHT]},
-                                      weight=0.05)
-    
+
     # attitude_landing = RewardTermCfg(func=rewards.attitude_rotation_magnitude, 
     #                                   params={"kernel": "inverse_quadratic", 
     #                                           "scale": 11.0,
@@ -186,29 +215,7 @@ class RewardsCfg:
     # landing_abduction_zero_pos = RewardTermCfg(func=rewards.landing_abduction_zero_pos,
     #                                           weight=-0.01)
             
-    is_terminated = RewardTermCfg(func=mdp.is_terminated_term, weight= -2, params={"term_keys": ["bad_orientation_takeoff", 
-                                                                                                 "bad_yaw_takeoff",
-                                                                                                 "bad_orientation_flight",
-                                                                                                 "bad_yaw_flight",
-                                                                                                 "bad_roll_takeoff",
-                                                                                                 "bad_roll_flight",
-                                                                                                 "failed_to_reach_target_height",
-                                                                                                 #"takeoff_timeout",
-                                                                                                 #"walking"
-                                                                                                 ]})
-    
-    dof_pos_limits = RewardTermCfg(func=mdp.joint_pos_limits, 
-                                   weight=-0.01)
 
-    contact_forces = RewardTermCfg(func=rewards.contact_forces,
-                                       weight=-0.0001,
-                                       params={
-                                           "kernel": rewards.Kernel.LINEAR,
-                                           "phases": [Phase.LANDING, Phase.TAKEOFF, Phase.FLIGHT]})
-    
-    action_rate_l2 = RewardTermCfg(func=mdp.action_rate_l2,
-                                   weight=-0.001)
-    
     
     # joint_torques_l2 = RewardTermCfg(func=mdp.joint_torques_l2,
     #                                   weight=-0.0001)
@@ -239,7 +246,7 @@ class TerminationsCfg:
     #bad_takeoff_at_flight = TerminationTermCfg(func=terminations.bad_takeoff_at_flight, params={"relative_error_threshold": 0.1})
     landed = TerminationTermCfg(func=terminations.landed, time_out=False)
     time_out = TerminationTermCfg(func=mdp.time_out, time_out=True)
-    #bad_knee_angle = TerminationTermCfg(func=terminations.bad_knee_angle)
+
     bad_orientation_takeoff = TerminationTermCfg(func=terminations.bad_orientation, params={
         "limit_angle": np.pi/3, 
         "phases": [Phase.TAKEOFF]
@@ -261,9 +268,8 @@ class TerminationsCfg:
     
     failed_to_reach_target_height = TerminationTermCfg(func=terminations.failed_to_reach_target_height, 
                                                        params={"height_threshold": 0.10})
-    
-    #takeoff_timeout = TerminationTermCfg(func=terminations.takeoff_timeout, params={"timeout": 0.5})
     walking = TerminationTermCfg(func=terminations.walking)
+    
     # illegal_contact = TerminationTermCfg(func=mdp.terminations.illegal_contact, 
     #                                      params={
     #                                          "sensor_cfg": SceneEntityCfg(name="contact_sensor", body_names=[".*THIGH.*", ".*SHANK.*", ".*HIP.*", ".*base.*"]),
@@ -272,7 +278,6 @@ class TerminationsCfg:
 
 @configclass
 class ActionsCfg:
-    #joint_pos = mdp.JointPositionActionCfg(asset_name="robot", debug_vis=True, joint_names=[".*"], use_default_offset=True) 
     joint_pos = mdp.JointPositionToLimitsActionCfg(
         asset_name="robot", 
         joint_names=[".*"], # Apply to all joints
@@ -284,7 +289,6 @@ class ActionsCfg:
         # For now, assume policy outputs absolute targets in normalized [-1,1] space.
         debug_vis=True
     )
-   #joint_pos = mdp.JointPositionActionCfg(asset_name="robot", debug_vis=True, joint_names=[".*"], use_default_offset=True) 
     
 @configclass
 class ObservationsCfg:
@@ -323,42 +327,9 @@ class MySceneCfg(InteractiveSceneCfg):
        debug_vis=False,
     )
 
-#     terrain = RigidObjectCfg(
-#       prim_path="/World/ground",
-#       spawn=sim_utils.CuboidCfg(
-#           size=(100.0, 100.0, 0.0001),
-#           physics_material=sim_utils.RigidBodyMaterialCfg(
-#               friction_combine_mode="multiply",
-#               restitution_combine_mode="multiply",
-#               static_friction=1.0,
-#               dynamic_friction=1.0,
-#           ),
-#           rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
-#           collision_props=sim_utils.CollisionPropertiesCfg(),
-#         #   visual_material=sim_utils.MdlFileCfg(
-#         #       mdl_path=(
-#         #           f"{ISAACLAB_NUCLEUS_DIR}/Materials/TilesMarbleSpiderWhiteBrickBondHoned/"
-#         #           "TilesMarbleSpiderWhiteBrickBondHoned.mdl"
-#         #       ),
-#         #       project_uvw=True,
-#         #       texture_scale=(0.25, 0.25),
-#         #   ),
-#       ),
-#       init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 0.0), rot=(1.0, 0.0, 0.0, 0.0)),
-#   )
-
     robot: ArticulationCfg = MarsJumperRobotCfg()
 
     contact_sensor = ContactSensorCfg(prim_path="{ENV_REGEX_NS}/robot/.*", force_threshold=0.1)
-    
-    # Sensor for LF_FOOT, filtered for ground contact only
-    # lf_foot_ground_sensor = ContactSensorCfg(
-    #     prim_path="{ENV_REGEX_NS}/robot/LF_FOOT",  # Target only the LF_FOOT
-    #     update_period=0.0,  # Update at physics rate
-    #     force_threshold=0.1, # Consistent with other sensor if used for state logic
-    #     filter_prim_paths_expr=["/World/ground"], # Filter: only report contacts with ground
-    #     debug_vis=False # Disable debug visualization for this specific sensor
-    # )
 
     sky_light = AssetBaseCfg(
         prim_path="/World/skyLight",
@@ -367,6 +338,7 @@ class MySceneCfg(InteractiveSceneCfg):
             texture_file=f"{ISAAC_NUCLEUS_DIR}/Materials/Textures/Skies/PolyHaven/kloofendal_43d_clear_puresky_4k.hdr",
         ),
     )    
+
 @configclass
 class CurriculumCfg:
     command_range_progression = CurriculumTermCfg(
@@ -395,8 +367,6 @@ class FullJumpEnvCfg(ManagerBasedRLEnvCfg):
     metrics_bucketing: MetricsBucketingCfg | None = None
 
     def __post_init__(self):
-        # How often to print bucketed metrics (in total environment steps). 0 or less disables.
-        self.print_bucket_metrics_interval: int = 300 # Example: print every 100k env steps
 
         self.takeoff_magnitude_ratio_error_threshold = 0.1
         self.takeoff_angle_error_threshold_rad = 10*DEG2RAD

@@ -1,4 +1,77 @@
 
+def contact_forces_potential_based(env: ManagerBasedRLEnv, 
+                             sensor_cfg: SceneEntityCfg, 
+                             phases: list[Phase], 
+                             kernel: Literal[Kernel.LINEAR, Kernel.SQUARE],
+                             potential_buffer_postfix: str) -> torch.Tensor:
+    """Calculates potential-based reward shaping for contact forces.
+
+    The potential P(s) is defined as the current penalty V(s) (sum of forces).
+    The reward component from this function is P(s') - P(s) = V(s') - V(s).
+    If V is a cost (higher is worse), a negative weight in RewardTermCfg is needed.
+    This function dynamically manages a buffer on the `env` object to store V(s).
+    """
+    buffer_name = "_prev_potential_contact_forces_" + potential_buffer_postfix
+    # Initialize buffer on env if it doesn't exist
+    if not hasattr(env, buffer_name):
+        setattr(env, buffer_name, torch.zeros(env.num_envs, device=env.device))
+    
+    previous_penalty_values = getattr(env, buffer_name)
+
+    # Determine active environments based on phases
+    active_for_current_phase = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
+    active_for_prev_phase = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
+    for phase in phases:
+        active_for_current_phase |= (env.jump_phase == phase)
+        active_for_prev_phase |= (env.prev_jump_phase == phase)
+        
+    if not torch.any(active_for_current_phase):
+        return torch.zeros(env.num_envs, device=env.device)
+
+    # Calculate current penalty V(s') for ALL environments
+    contact_sensor: ContactSensor = env.scene[sensor_cfg.name]
+    
+    net_contact_forces = contact_sensor.data.net_forces_w[:, sensor_cfg.body_ids]
+    forces_magnitude = torch.norm(net_contact_forces, dim=-1)  # shape [num_envs, num_bodies_in_sensor_cfg]
+    current_penalty_values = torch.sum(forces_magnitude, dim=-1)  # shape [num_envs]
+
+    if kernel == Kernel.SQUARE:
+        current_penalty_values = torch.square(current_penalty_values)
+    elif kernel != Kernel.LINEAR:
+        raise ValueError(f"Unsupported kernel type: {kernel} for contact_forces reward term.")
+
+    # Mask for environments where the reward was active in the previous phase AND is active in the current phase
+    continuously_active_mask = active_for_current_phase & active_for_prev_phase
+
+    # Initialize reward shaping component to zeros.
+    reward_shaping_component = torch.zeros_like(current_penalty_values)
+
+    # Calculate reward V(s_curr) - V(s_prev) only for continuously active environments.
+    # For newly active environments (active_for_current_phase & ~active_for_prev_phase),
+    # reward_shaping_component remains 0 because they are not in continuously_active_mask.
+    # For environments not active in current_s_begin, it also remains 0.
+    if torch.any(continuously_active_mask):
+        reward_shaping_component[continuously_active_mask] = \
+            current_penalty_values[continuously_active_mask] - \
+            previous_penalty_values[continuously_active_mask]
+
+    # Buffer update: store V(s_current_end) for the next step.
+    # For environments that are resetting in this step, their "previous value" for the *next* episode
+    # should reflect an initial state (e.g., 0 for contact forces).
+    # env.reset_buf is set by TerminationManager before RewardManager.compute() is called.
+    next_step_prev_potential_values = current_penalty_values.clone().detach()
+    if hasattr(env, 'reset_buf'): # ManagerBasedRLEnv has reset_buf
+        reset_env_ids = env.reset_buf.nonzero(as_tuple=False).squeeze(-1)
+        if reset_env_ids.numel() > 0:
+            next_step_prev_potential_values[reset_env_ids] = 0.0  # Assuming 0 is the initial potential for reset states
+    
+    setattr(env, buffer_name, next_step_prev_potential_values)
+
+    return reward_shaping_component
+
+    
+    
+
 # class MarsJumperEnv(ManagerBasedRLEnv):
 #     cfg: "MarsJumperEnvCfg"
 
