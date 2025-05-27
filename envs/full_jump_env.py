@@ -61,10 +61,24 @@ class FullJumpEnv(ManagerBasedRLEnv):
         self.dynamic_takeoff_vector = torch.zeros(self.num_envs, 3, device=self.device) #Will be updated while env is in takeoff phase, then hold its last value until reset
         #for curriculum
         self.mean_episode_env_steps = 0
+        
+        # Phase-specific reward accumulators
+        self.takeoff_reward_sum = torch.zeros(self.num_envs, device=self.device)
+        self.flight_reward_sum = torch.zeros(self.num_envs, device=self.device)
+        self.landing_reward_sum = torch.zeros(self.num_envs, device=self.device)
     
 
     def step(self, action: torch.Tensor) -> VecEnvStepReturn:
-        obs_buf, reward_buf, terminated_buf, truncated_buf, extras = super().step(action)
+        #Current state k-1
+        obs_buf, reward_buf, terminated_buf, truncated_buf, extras = super().step(action) #Must be after updating jump phase since rewards are based on active phase
+        #Now state k
+        
+        # Accumulate phase-specific rewards
+        # These masks represent the phase *before* update_jump_phase() is called for the current step k
+        # So, reward_buf[self.takeoff_mask] are rewards generated while in takeoff phase
+        self.takeoff_reward_sum[self.takeoff_mask] += reward_buf[self.takeoff_mask]
+        self.flight_reward_sum[self.flight_mask] += reward_buf[self.flight_mask]
+        self.landing_reward_sum[self.landing_mask] += reward_buf[self.landing_mask]
         
         self.center_of_mass_lin_vel = self.get_center_of_mass_lin_vel()
         self.center_of_mass_pos = self.get_center_of_mass_pos()
@@ -74,7 +88,7 @@ class FullJumpEnv(ManagerBasedRLEnv):
             
         self.update_jump_phase()
         self.log_phase_info()
-            
+        
         # Update bucketed takeoff errors via metrics system
         bucketed_logs = self.log_bucketed_errors()
         self.extras["log"].update(bucketed_logs)
@@ -94,16 +108,17 @@ class FullJumpEnv(ManagerBasedRLEnv):
             takeoff_to_flight_env_ids = self.takeoff_to_flight_mask.nonzero(as_tuple=False).squeeze(-1)
             self.takeoff_relative_error[takeoff_to_flight_env_ids] = self.calculate_takeoff_relative_error(takeoff_to_flight_env_ids)
         
-        #Track landing errors
+        #Track landing errors (attitude at transition to landing is used for flight success criteria)
         if torch.any(self.flight_to_landing_mask):
             self.angle_error_at_landing[self.flight_to_landing_mask] = self._abs_angle_error(self.robot.data.root_quat_w[self.flight_to_landing_mask])
             current_com_x = self.center_of_mass_pos[:,0]
             self.length_error_at_landing[self.flight_to_landing_mask] = current_com_x[self.flight_to_landing_mask] - self.target_length[self.flight_to_landing_mask]
+            # Feet height at landing will now be calculated in _reset_idx at termination
         
-        # current_sum_contact_forces = self.sum_contact_forces() # Avoid rebinding self.sum_contact_forces
-        # self.extras["log"]["takeoff_contact_forces"] = current_sum_contact_forces[self.takeoff_mask].mean().item() if torch.any(self.takeoff_mask) else float('nan')
-        # self.extras["log"]["flight_contact_forces"] = current_sum_contact_forces[self.flight_mask].mean().item() if torch.any(self.flight_mask) else float('nan')
-        # self.extras["log"]["landing_contact_forces"] = current_sum_contact_forces[self.landing_mask].mean().item() if torch.any(self.landing_mask) else float('nan')
+        current_sum_contact_forces = self.sum_contact_forces() # Avoid rebinding self.sum_contact_forces
+        self.extras["log"]["takeoff_contact_forces"] = current_sum_contact_forces[self.takeoff_mask].mean().item() if torch.any(self.takeoff_mask) else float('nan')
+        self.extras["log"]["flight_contact_forces"] = current_sum_contact_forces[self.flight_mask].mean().item() if torch.any(self.flight_mask) else float('nan')
+        self.extras["log"]["landing_contact_forces"] = current_sum_contact_forces[self.landing_mask].mean().item() if torch.any(self.landing_mask) else float('nan')
         
         if torch.any(self.flight_mask):
             flight_quat = self.robot.data.root_quat_w[self.flight_mask]
@@ -115,11 +130,25 @@ class FullJumpEnv(ManagerBasedRLEnv):
 
         if self.cfg.curriculum is not None:
             self.steps_since_curriculum_update += 1
-
+            
         return obs_buf, reward_buf, terminated_buf, truncated_buf, extras
     
     def _reset_idx(self, env_ids: Sequence[int]):
         if len(env_ids) > 0:
+            # Convert env_ids to a tensor if it's a list/sequence for consistent indexing
+            timed_out_mask = self.termination_manager.get_term("time_out")[env_ids]
+            
+            if len(timed_out_mask) > 0:
+                current_quat_w = self.robot.data.root_quat_w[env_ids]
+                self.attitude_error_at_timeout[env_ids] = self._abs_angle_error(current_quat_w)
+
+                feet_height = self.robot.data.body_pos_w[env_ids][:, self.feet_body_idx, 2]
+                self.feet_height_at_timeout[env_ids] = torch.mean(feet_height, dim=-1)
+
+                root_height = self.robot.data.root_pos_w[env_ids, 2]
+                self.root_height_at_timeout[env_ids] = root_height
+
+
             # Update bucketed metrics before reset
             self.update_bucketed_metrics(env_ids, self.jump_phase) # Removed redundant self
 
@@ -133,6 +162,12 @@ class FullJumpEnv(ManagerBasedRLEnv):
             # Update running success rates (uses batch rates calculated above)
             self.update_running_success_rates(env_ids)
             
+            # --- Log and prepare phase-specific reward sums for reset envs ---
+            # Clone sums for envs about to be reset
+            takeoff_rewards_to_log = self.takeoff_reward_sum[env_ids].clone()
+            flight_rewards_to_log = self.flight_reward_sum[env_ids].clone()
+            landing_rewards_to_log = self.landing_reward_sum[env_ids].clone()
+
             # Sample new commands before calling super()._reset_idx
             self.sample_command(env_ids)   
             
@@ -152,6 +187,9 @@ class FullJumpEnv(ManagerBasedRLEnv):
             self.extras["log"].update({
                 "full_jump_success_rate": self.full_jump_success_rate,
                 "running_success_rate": self.success_rate,
+                "reward_sum/takeoff_phase_sum": torch.mean(takeoff_rewards_to_log).item() if len(takeoff_rewards_to_log) > 0 else float('nan'),
+                "reward_sum/flight_phase_sum": torch.mean(flight_rewards_to_log).item() if len(flight_rewards_to_log) > 0 else float('nan'),
+                "reward_sum/landing_phase_sum": torch.mean(landing_rewards_to_log).item() if len(landing_rewards_to_log) > 0 else float('nan'),
             })
 
             self.jump_phase[env_ids] = Phase.TAKEOFF
@@ -167,11 +205,18 @@ class FullJumpEnv(ManagerBasedRLEnv):
             self.max_height_achieved[env_ids] = 0 # Reset to 0.0 not COM height
             self.length_error_at_landing[env_ids] = float('nan')
             self.height_error_peak[env_ids] = float('nan')
-            self.length_error_at_termination[env_ids] = float('nan')
+            self.feet_height_at_timeout[env_ids] = float('nan')
+            self.attitude_error_at_timeout[env_ids] = float('nan')
+            self.root_height_at_timeout[env_ids] = float('nan')
 
             self.flight_success[env_ids] = False
             self.takeoff_success[env_ids] = False
             self.landing_success[env_ids] = False
+            
+            # Reset phase-specific reward sums for these envs
+            self.takeoff_reward_sum[env_ids] = 0.0
+            self.flight_reward_sum[env_ids] = 0.0
+            self.landing_reward_sum[env_ids] = 0.0
              
     def _init_success_metrics(self):
         """Initialize success tracking tensors."""
@@ -204,8 +249,10 @@ class FullJumpEnv(ManagerBasedRLEnv):
         
         # Use NaN as sentinel value to indicate "not calculated yet" instead of 0.0
         self.length_error_at_landing = torch.full((self.num_envs,), float('nan'), device=self.device)
+        self.feet_height_at_timeout = torch.full((self.num_envs,), float('nan'), device=self.device)
+        self.attitude_error_at_timeout = torch.full((self.num_envs,), float('nan'), device=self.device)
+        self.root_height_at_timeout = torch.full((self.num_envs,), float('nan'), device=self.device)
         self.height_error_peak = torch.full((self.num_envs,), float('nan'), device=self.device)
-        self.length_error_at_termination = torch.full((self.num_envs,), float('nan'), device=self.device)
 
     def _init_bucketing_system(self):
         """Initialize metrics bucketing system if configured."""
@@ -358,10 +405,11 @@ class FullJumpEnv(ManagerBasedRLEnv):
         error_log_data = {
             "length_error_at_landing": float('nan'),
             "height_error_peak": float('nan'), 
-            "length_error_at_termination": float('nan'),
             "abs_length_error_at_landing": float('nan'),
             "abs_height_error_peak": float('nan'),
-            "abs_length_error_at_termination": float('nan'),
+            "feet_height_at_timeout": float('nan'),
+            "attitude_error_at_timeout": float('nan'),
+            "root_height_at_timeout": float('nan'),
         }
         
         if len(reset_env_ids) > 0:
@@ -373,10 +421,18 @@ class FullJumpEnv(ManagerBasedRLEnv):
             if torch.any(landing_mask):
                 landing_env_ids = reset_env_ids[landing_mask]  # Get actual environment indices
                 
-                length_landing_errors = self.length_error_at_landing[landing_env_ids]
-            
+                length_landing_errors = self.length_error_at_landing[landing_env_ids] # Error at TRANSITION to landing
                 error_log_data["length_error_at_landing"] = torch.nanmean(length_landing_errors).item()
                 error_log_data["abs_length_error_at_landing"] = torch.nanmean(torch.abs(length_landing_errors)).item()
+
+                feet_heights_landed = self.feet_height_at_timeout[landing_env_ids] # Now at TERMINATION
+                error_log_data["feet_height_at_timeout"] = torch.nanmean(feet_heights_landed).item()
+                
+                attitude_errors_land_term = self.attitude_error_at_timeout[landing_env_ids] # at TERMINATION
+                error_log_data["attitude_error_at_timeout"] = torch.nanmean(attitude_errors_land_term).item()
+
+                root_heights_land_term = self.root_height_at_timeout[landing_env_ids] # New, at TERMINATION
+                error_log_data["root_height_at_timeout"] = torch.nanmean(root_heights_land_term).item()
             
         return error_log_data
 
@@ -654,10 +710,12 @@ class FullJumpEnv(ManagerBasedRLEnv):
         
         falling = self.center_of_mass_lin_vel[:, 2] < -0.1  
         
-        all_body_heights_w = self.robot.data.body_pos_w[:, :, 2]
-        any_body_too_low = torch.any(all_body_heights_w < 0.1, dim=-1)
+        all_body_except_feet_heights_w = self.robot.data.body_pos_w[:, self.bodies_except_feet_idx, 2]
+        any_body_except_feet_too_low = torch.any(all_body_except_feet_heights_w < 0.1, dim=-1)
+        feet_heights_w = self.robot.data.body_pos_w[:, self.feet_body_idx, 2]
+        any_feet_too_low = torch.any(feet_heights_w < 0.04, dim=-1)
 
-        self.jump_phase[self.flight_mask & falling & any_body_too_low] = Phase.LANDING
+        self.jump_phase[self.flight_mask & falling & (any_body_except_feet_too_low | any_feet_too_low)] = Phase.LANDING
         
         self.takeoff_mask = self.jump_phase == Phase.TAKEOFF
         self.flight_mask = self.jump_phase == Phase.FLIGHT

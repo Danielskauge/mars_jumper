@@ -18,7 +18,7 @@ from robot.robot_cfg import MarsJumperRobotCfg
 from terms.utils import Phase
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 
-MAX_EPISODE_LENGTH_S = 3.0
+MAX_EPISODE_LENGTH_S = 2.0
 DEG2RAD = np.pi/180
 EARTH_GRAVITY = 9.81
 MARS_GRAVITY = 3.721
@@ -26,8 +26,8 @@ MARS_GRAVITY = 3.721
 @configclass
 class MetricsBucketingCfg:
     """Configuration for command bucketing and metric tracking."""
-    num_height_buckets: int = 0
-    num_length_buckets: int = 0
+    num_height_buckets: int = 3
+    num_length_buckets: int = 3
 
 @configclass
 class CommandRangesCfg:
@@ -113,52 +113,130 @@ class EventCfg:
 class RewardsCfg:
     relative_cmd_error = RewardTermCfg(func=rewards.cmd_error,
                                        params={"kernel": rewards.Kernel.EXPONENTIAL,
-                                               "scale": 7.0},
-                                       weight=30.0, 
+                                               "scale": 7.0,
+                                               "error_type": "relative"},
+                                       weight=10.0, 
     )
     
-    # liftoff_relative_cmd_error = RewardTermCfg( # Sparse reward at the moment of liftoff
-    # func=rewards.liftoff_relative_cmd_error,
-    # params={"kernel": rewards.Kernel.EXPONENTIAL,
-    #         "scale": 7.0}, 
-    # weight=100.0, 
+    # Add takeoff angle error reward to shape angle precision
+    takeoff_angle_error = RewardTermCfg(func=rewards.takeoff_angle_error,
+                                        params={"scale": 7.0},
+                                        weight=30.0,
+    )
+    
+    liftoff_relative_cmd_error = RewardTermCfg(func=rewards.liftoff_relative_cmd_error,
+        params={"kernel": rewards.Kernel.EXPONENTIAL,
+                "scale": 7.0}, 
+        weight=100.0, 
+    )
+
+    
+    # relative_cmd_error_huber = RewardTermCfg(func=rewards.cmd_error,
+    #                                    params={"kernel": rewards.Kernel.HUBER,
+    #                                            "error_type": "relative",
+    #                                            "delta": 0.01,
+    #                                            "e_max": 0.6},
+    #                                    weight=100.0, 
     # )
     
-    attitude_error_on_way_down = RewardTermCfg(func=rewards.attitude_error_on_way_down, 
+
+    
+    # attitude_error_on_way_down = RewardTermCfg(func=rewards.attitude_error_on_way_down, 
+    #                                           params={"scale": 5.0,
+    #                                                   "kernel": rewards.Kernel.INVERSE_SQUARE,
+    #                                                   "phases": [Phase.FLIGHT]},
+    #                                           weight=0.8)
+    
+        
+    attitude_error_on_way_down_huber = RewardTermCfg(func=rewards.attitude_error_on_way_down, 
                                               params={"scale": 5.0,
-                                                      "kernel": rewards.Kernel.INVERSE_LINEAR,
+                                                      "kernel": rewards.Kernel.HUBER,
+                                                      "delta": 0.01,
+                                                      "e_max": 60*DEG2RAD,
                                                       "phases": [Phase.FLIGHT]},
-                                              weight=0.8)
+                                              weight=1.5)
     
-    attitude_rotation_flight = RewardTermCfg(func=rewards.attitude_error, 
-                                      params={"kernel": rewards.Kernel.INVERSE_SQUARE, 
-                                              "scale": 5.0,
-                                              "phases": [Phase.FLIGHT]},
-                                      weight=0.08)
+    # attitude_rotation_flight = RewardTermCfg(func=rewards.attitude_error, 
+    #                                   params={"kernel": rewards.Kernel.INVERSE_SQUARE, 
+    #                                           "scale": 5.0,
+    #                                           "phases": [Phase.FLIGHT]},
+    #                                   weight=0.08)
     
-    # is_terminated = RewardTermCfg(func=mdp.is_terminated_term, weight= -2, params={"term_keys": ["bad_orientation_takeoff", 
-    #                                                                                              "bad_yaw_takeoff",
-    #                                                                                              "bad_orientation_flight",
-    #                                                                                              "bad_yaw_flight",
-    #                                                                                              "bad_roll_takeoff",
-    #                                                                                              "bad_roll_flight",
-    #                                                                                              "failed_to_reach_target_height",
-    #                                                                                              "walking"
-    #                                                                                              ]})
+    # attitude_rotation_flight_huber = RewardTermCfg(func=rewards.attitude_error, 
+    #                                   params={"kernel": rewards.Kernel.HUBER, 
+    #                                           "delta": 0.1,
+    #                                           "e_max": np.pi/3,
+    #                                           "phases": [Phase.FLIGHT]},
+    #                                   weight=0.08)
     
-    # dof_pos_limits = RewardTermCfg(func=mdp.joint_pos_limits, 
-    #                                weight=-0.01)
+    is_terminated = RewardTermCfg(func=mdp.is_terminated_term, weight= -2, params={"term_keys": [#"bad_orientation_takeoff", 
+                                                                                                #  "bad_yaw_takeoff",
+                                                                                                 #"bad_orientation_flight",
+                                                                                                #  "bad_yaw_flight",
+                                                                                                #  "bad_roll_takeoff",
+                                                                                                #  "bad_roll_flight",
+                                                                                                 "bad_orientation_landing",
+                                                                                                 #"failed_to_reach_target_height",
+                                                                                                 "walking"
+                                                                                                 ]})
+    
+    dof_pos_limits = RewardTermCfg(func=mdp.joint_pos_limits, 
+                                   weight=-0.01)
 
     # contact_forces = RewardTermCfg(func=rewards.contact_forces,
-    #                                    weight=-0.0001,
+    #                                    weight=0.0001,
     #                                    params={
-    #                                        "kernel": rewards.Kernel.LINEAR,
-    #                                        "phases": [Phase.LANDING, Phase.TAKEOFF, Phase.FLIGHT]})
+    #                                        "kernel": rewards.Kernel.HUBER,
+    #                                        "delta": 1,
+    #                                        "e_max": 100,
+    #                                        "phases": [Phase.TAKEOFF, Phase.FLIGHT]})
     
-    # action_rate_l2 = RewardTermCfg(func=mdp.action_rate_l2,
-    #                                weight=-0.001)
+    action_rate_l2 = RewardTermCfg(func=mdp.action_rate_l2,
+                                   weight=-0.0001)
+    
+    landing_contact_forces = RewardTermCfg(func=rewards.contact_forces,
+                                           weight=0.05,
+                                           params={
+                                               "kernel": rewards.Kernel.HUBER,
+                                               "delta": 1,
+                                               "e_max": 30,
+                                               "phases": [Phase.LANDING]})
+    
+    feet_height = RewardTermCfg(func=rewards.feet_height,
+                                    params={"kernel": rewards.Kernel.HUBER,
+                                            "delta": 0.02,
+                                            "e_max": 0.20,
+                                            "phases": [Phase.LANDING]},
+                                    weight=3)
+
+    attitude_landing = RewardTermCfg(func=rewards.attitude_error, 
+                                      params={"kernel": rewards.Kernel.HUBER, 
+                                              "delta": 10*DEG2RAD,
+                                              "e_max": 30*DEG2RAD,
+                                              "phases": [Phase.LANDING]},
+                                      weight=0.2)
+    
+    landing_base_height = RewardTermCfg(func=rewards.landing_base_height,
+                                   params={"target_height": 0.16, 
+                                           "kernel": rewards.Kernel.HUBER,
+                                           "delta": 0.02,
+                                           "e_max": 0.10},
+                                   weight=0.5)
     
     
+    # yaw_penalty_takeoff_ascent = RewardTermCfg(func=rewards.yaw_penalty,
+    #                                            params={"kernel": rewards.Kernel.HUBER,
+    #                                                    "delta": 20*DEG2RAD,  # 10 degrees threshold for quadratic to linear
+    #                                                    "e_max": 30*DEG2RAD,  # 30 degrees max before reward=0
+    #                                                    "phases": [Phase.TAKEOFF, Phase.FLIGHT]},
+    #                                            weight=0.3)
+    
+    # roll_penalty_takeoff_ascent = RewardTermCfg(func=rewards.roll_penalty,
+    #                                             params={"kernel": rewards.Kernel.HUBER,
+    #                                                     "delta": 20*DEG2RAD,  # 5 degrees threshold for quadratic to linear
+    #                                                     "e_max": 30*DEG2RAD,  # 15 degrees max before reward=0
+    #                                                     "phases": [Phase.TAKEOFF, Phase.FLIGHT]},
+    #                                             weight=0.3)
     
     # absolute_cmd_error = RewardTermCfg(func=rewards.cmd_error,
     #                                    params={"scale": 7/2.2, 
@@ -183,12 +261,7 @@ class RewardsCfg:
     #                                    params={"scale": 3.0},
     #                                    weight=10.0)
 
-    # landing_base_height = RewardTermCfg(func=rewards.landing_base_height,
-    #                                params={"target_height": 0.18, 
-    #                                        "kernel": rewards.Kernel.INVERSE_SQUARE,
-    #                                        "scale": 400},
-    #                                weight=0.1)
-    
+
     # landing_base_vertical_vel = RewardTermCfg(func=rewards.landing_base_vertical_vel_l1,
     #                                           weight=-0.001)
     
@@ -199,12 +272,7 @@ class RewardsCfg:
     #                                   weight=0.01)
     
 
-    # attitude_landing = RewardTermCfg(func=rewards.attitude_rotation_magnitude, 
-    #                                   params={"kernel": "inverse_quadratic", 
-    #                                           "scale": 11.0,
-    #                                           "phases": [Phase.LANDING]},
-    #                                   weight=0.5)
-    
+
     # landing_foot_ground_contact = RewardTermCfg(func=rewards.landing_foot_ground_contact,
     #                                             weight=0.1)
     
@@ -226,12 +294,7 @@ class RewardsCfg:
     #                                          )
     
     # # Standing/landing foot positioning rewards
-    # feet_near_ground = RewardTermCfg(func=rewards.feet_near_ground_reward,
-    #                                  params={"height_threshold": 0.02,  # 2cm threshold
-    #                                          "ground_height": 0.0,       # Assuming flat ground at z=0
-    #                                          "phases": [Phase.LANDING]},
-    #                                  weight=0.1)
-    
+
     # # Alternative penalty approach for foot height
     # feet_height_penalty = RewardTermCfg(func=rewards.feet_height_penalty,
     #                                     params={"ground_height": 0.0,
@@ -241,39 +304,45 @@ class RewardsCfg:
 
 @configclass
 class TerminationsCfg:
-    #bad_takeoff_at_landing = TerminationTermCfg(func=terminations.bad_takeoff_at_landing, params={"relative_error_threshold": 0.1})
-    #bad_flight_at_landing = TerminationTermCfg(func=terminations.bad_flight_at_landing, params={"angle_error_threshold": 15*DEG2RAD})
+    #bad_takeoff_at_descent = TerminationTermCfg(func=terminations.bad_takeoff_at_descent, params={"relative_error_threshold": 0.05})
+    bad_takeoff_success_rate = TerminationTermCfg(func=terminations.bad_takeoff_success_rate, params={"success_rate_threshold": 0.6, "phase": Phase.LANDING})
+    #bad_takeoff_at_flight = TerminationTermCfg(func=terminations.bad_takeoff_at_flight, params={"relative_error_threshold": 0.05})
+    bad_takeoff_at_landing = TerminationTermCfg(func=terminations.bad_takeoff_at_landing, params={"relative_error_threshold": 0.1})
     #bad_takeoff_at_flight = TerminationTermCfg(func=terminations.bad_takeoff_at_flight, params={"relative_error_threshold": 0.1})
-    landed = TerminationTermCfg(func=terminations.landed, time_out=False)
+    #landed = TerminationTermCfg(func=terminations.landed, time_out=False)
     time_out = TerminationTermCfg(func=mdp.time_out, time_out=True)
 
     bad_orientation_takeoff = TerminationTermCfg(func=terminations.bad_orientation, params={
-        "limit_angle": np.pi/3, 
+        "limit_angle": np.pi/2, 
         "phases": [Phase.TAKEOFF]
     })
     bad_orientation_flight = TerminationTermCfg(func=terminations.bad_orientation, params={
-        "limit_angle": np.pi/3, 
+        "limit_angle": np.pi/2, 
         "phases": [Phase.FLIGHT]
     })
     
-    bad_yaw_takeoff = TerminationTermCfg(func=terminations.bad_yaw, params={"limit_angle": np.pi/4,
-                                                                            "phases": [Phase.TAKEOFF]})
-    bad_yaw_flight = TerminationTermCfg(func=terminations.bad_yaw, params={"limit_angle": np.pi/4,
-                                                                            "phases": [Phase.FLIGHT]})
+    # bad_yaw_takeoff = TerminationTermCfg(func=terminations.bad_yaw, params={"limit_angle": np.pi/4,
+    #                                                                         "phases": [Phase.TAKEOFF]})
+    # # bad_yaw_flight = TerminationTermCfg(func=terminations.bad_yaw, params={"limit_angle": np.pi/4,
+    # #                                                                         "phases": [Phase.FLIGHT]})
     
-    bad_roll_takeoff = TerminationTermCfg(func=terminations.bad_roll, params={"limit_angle": np.pi/4,
-                                                                              "phases": [Phase.TAKEOFF]})
-    bad_roll_flight = TerminationTermCfg(func=terminations.bad_roll, params={"limit_angle": np.pi/4,
-                                                                             "phases": [Phase.FLIGHT]})
+    # bad_roll_takeoff = TerminationTermCfg(func=terminations.bad_roll, params={"limit_angle": np.pi/4,
+    #                                                                           "phases": [Phase.TAKEOFF]})
+    # bad_roll_flight = TerminationTermCfg(func=terminations.bad_roll, params={"limit_angle": np.pi/4,
+    #                                                                          "phases": [Phase.FLIGHT]})
+    bad_orientation_landing = TerminationTermCfg(func=terminations.bad_orientation, params={
+        "limit_angle": np.pi/6, 
+        "phases": [Phase.LANDING]
+    })
     
-    failed_to_reach_target_height = TerminationTermCfg(func=terminations.failed_to_reach_target_height, 
-                                                       params={"height_threshold": 0.10})
+    #failed_to_reach_target_height = TerminationTermCfg(func=terminations.failed_to_reach_target_height, 
+                                                    #    params={"height_threshold": 0.10})
     walking = TerminationTermCfg(func=terminations.walking)
     
     # illegal_contact = TerminationTermCfg(func=mdp.terminations.illegal_contact, 
     #                                      params={
     #                                          "sensor_cfg": SceneEntityCfg(name="contact_sensor", body_names=[".*THIGH.*", ".*SHANK.*", ".*HIP.*", ".*base.*"]),
-    #                                          "threshold": 10})
+    #                                          "threshold": 100})
     # self_collision = TerminationTermCfg(func=custom_terminations.self_collision, params={"asset_cfg": SceneEntityCfg("robot", body_names=".*"), "threshold": 1.0}) #TODO: implement
 
 @configclass

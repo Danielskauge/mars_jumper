@@ -48,6 +48,12 @@ def bad_knee_angle(
     knee_angle_limit = env.robot.cfg.knee_joint_limits
     return torch.any(knee_angle > 180*DEG2RAD, dim=-1)
 
+def bad_takeoff_at_descent(
+    env: ManagerBasedRLEnv,
+    relative_error_threshold: float = 0.1,
+) -> torch.Tensor:
+    return (env.takeoff_relative_error > relative_error_threshold) & (env.center_of_mass_lin_vel[:, 2] < 0.4) & env.flight_mask
+
 def bad_takeoff_at_flight(
     env: ManagerBasedRLEnv,
     relative_error_threshold: float = 0.1,
@@ -57,9 +63,10 @@ def bad_takeoff_at_flight(
 def bad_takeoff_success_rate(
     env: ManagerBasedRLEnv,
     success_rate_threshold: float = 0.9,
+    phase: Phase = Phase.LANDING,
 ) -> torch.Tensor:
     """Terminate at landing when the takeoff success rate is too low."""
-    return (env.running_takeoff_success_rate < success_rate_threshold) & (env.jump_phase == Phase.LANDING)
+    return (env.running_takeoff_success_rate < success_rate_threshold) & (env.jump_phase == phase)
 
 def bad_flight_success_rate(
     env: ManagerBasedRLEnv,
