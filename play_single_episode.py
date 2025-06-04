@@ -12,7 +12,7 @@ import glob # Added import for checkpoint searching
 
 parser = argparse.ArgumentParser(description="Play a checkpoint of an RL agent from RL-Games for a single episode.")
 parser.add_argument("--cmd_height", type=float, default=0.4, help="Fixed command height (default: 0.3m).")
-parser.add_argument("--cmd_length", type=float, default=0.4, help="Fixed command length (default: 0.0m).")
+parser.add_argument("--cmd_length", type=float, default=0.3, help="Fixed command length (default: 0.0m).")
 parser.add_argument("--wandb", action="store_true", default=False, help="Log video and plots to WandB.")
 parser.add_argument(
     "--disable_fabric", action="store_true", default=False, help="Disable fabric and use USD I/O operations."
@@ -69,6 +69,7 @@ def plot_episode_data(robot,
                       joint_angles, 
                       joint_torques, 
                       com_lin_vel,
+                      com_lin_accel,  # Add acceleration parameter
                       base_height, 
                       base_x_pos,
                       jump_phase, 
@@ -99,6 +100,7 @@ def plot_episode_data(robot,
     joint_torques_np = torch.stack(joint_torques).cpu().numpy()
     target_positions_np = torch.stack(scaled_actions).cpu().numpy()
     com_lin_vel_np = torch.stack(com_lin_vel).cpu().numpy()
+    com_lin_accel_np = torch.stack(com_lin_accel).cpu().numpy()
     base_height_np = torch.stack(base_height).cpu().numpy()
     base_x_pos_np = torch.stack(base_x_pos).cpu().numpy()
     jump_phase_np = torch.stack(jump_phase).cpu().numpy().flatten() # Ensure flat
@@ -241,7 +243,7 @@ def plot_episode_data(robot,
 
     # 2. Base Kinematics (COM Trajectory, COM Vel Components, COM Vel Mag)
     print("[INFO] Plotting Base Kinematics...")
-    fig_kin, axs_kin = plt.subplots(6, 1, figsize=(15, 24), sharex=False) # Changed from 5 to 6 subplots, increased figsize
+    fig_kin, axs_kin = plt.subplots(7, 1, figsize=(15, 28), sharex=False) # Changed from 6 to 7 subplots, increased figsize
     fig_kin.suptitle('Base Kinematics', fontsize=16)
     
     # COM Trajectory (Z vs X)
@@ -303,30 +305,28 @@ def plot_episode_data(robot,
     axs_kin[2].xaxis.set_major_formatter(ticker.FormatStrFormatter('%.1f'))
     add_all_phase_shading(axs_kin[2], time_np, jump_phase_np, add_legend_labels=False)
     
-    # COM Vel Magnitude
-    com_lin_vel_mag = np.linalg.norm(com_lin_vel_np, axis=1)
-    axs_kin[3].plot(time_np, com_lin_vel_mag, label="COM Velocity Magnitude")
-    axs_kin[3].plot(time_np, dynamic_cmd_magnitude_np, 'r--', label=f"Dynamic Command Mag ({actual_cmd_magnitude:.2f} initial)") # Plot dynamic command
-    axs_kin[3].set_title("COM Linear Velocity Magnitude")
+    # COM Acceleration Components
+    accel_components = ['X', 'Y', 'Z']
+    for i in range(3):
+        axs_kin[3].plot(time_np, com_lin_accel_np[:, i], label=f"COM Accel {accel_components[i]}")
+    axs_kin[3].set_title("COM Linear Acceleration Components")
     axs_kin[3].set_xlabel("Time (s)")
-    axs_kin[3].set_ylabel("Velocity (m/s)")
-    axs_kin[3].legend()
+    axs_kin[3].set_ylabel("Acceleration (m/s²)")
+    axs_kin[3].legend(loc='upper right', fontsize='small')
     axs_kin[3].grid(True)
     axs_kin[3].xaxis.set_major_locator(ticker.MultipleLocator(0.1))
     axs_kin[3].xaxis.set_minor_locator(ticker.MultipleLocator(0.05))
     axs_kin[3].xaxis.set_major_formatter(ticker.FormatStrFormatter('%.1f'))
     add_all_phase_shading(axs_kin[3], time_np, jump_phase_np, add_legend_labels=False)
-
-    # COM Vel Angle (XZ-plane for Pitch)
-    com_vel_pitch_rad = np.arctan2(com_lin_vel_np[:, 0], com_lin_vel_np[:, 2]) # X-component (index 0), Z-component (index 2). Angle from +Z, positive towards +X.
-    com_vel_pitch_deg = np.degrees(com_vel_pitch_rad)
-    axs_kin[4].plot(time_np, com_vel_pitch_deg, label="COM Velocity Pitch Angle (XZ-plane)")
-    # Add command pitch line if available and meaningful
-    dynamic_cmd_pitch_deg_np = np.degrees(dynamic_cmd_pitch_np) # Convert dynamic pitch to degrees
-    axs_kin[4].plot(time_np, dynamic_cmd_pitch_deg_np, 'g--', label=f"Dynamic Command Pitch ({math.degrees(actual_cmd_pitch):.1f}° initial)") # Plot dynamic command
-    axs_kin[4].set_title("COM Velocity Pitch Angle in XZ Plane")
+    
+    # COM Vel Magnitude
+    com_lin_vel_mag = np.linalg.norm(com_lin_vel_np, axis=1)
+    axs_kin[4].plot(time_np, com_lin_vel_mag, label="COM Velocity Magnitude")
+    axs_kin[4].plot(time_np, dynamic_cmd_magnitude_np, 'r--', label=f"Dynamic Command Mag ({actual_cmd_magnitude:.2f} initial)") # Plot dynamic command
+    axs_kin[4].set_title("COM Linear Velocity Magnitude")
     axs_kin[4].set_xlabel("Time (s)")
-    axs_kin[4].set_ylabel("Angle (degrees)")
+    axs_kin[4].set_ylabel("Velocity (m/s)")
+    axs_kin[4].set_ylim(0, 6)
     axs_kin[4].legend()
     axs_kin[4].grid(True)
     axs_kin[4].xaxis.set_major_locator(ticker.MultipleLocator(0.1))
@@ -334,8 +334,26 @@ def plot_episode_data(robot,
     axs_kin[4].xaxis.set_major_formatter(ticker.FormatStrFormatter('%.1f'))
     add_all_phase_shading(axs_kin[4], time_np, jump_phase_np, add_legend_labels=False)
 
+    # COM Vel Angle (XZ-plane for Pitch)
+    com_vel_pitch_rad = np.arctan2(com_lin_vel_np[:, 0], com_lin_vel_np[:, 2]) # X-component (index 0), Z-component (index 2). Angle from +Z, positive towards +X.
+    com_vel_pitch_deg = np.degrees(com_vel_pitch_rad)
+    axs_kin[5].plot(time_np, com_vel_pitch_deg, label="COM Velocity Pitch Angle (XZ-plane)")
+    # Add command pitch line if available and meaningful
+    dynamic_cmd_pitch_deg_np = np.degrees(dynamic_cmd_pitch_np) # Convert dynamic pitch to degrees
+    axs_kin[5].plot(time_np, dynamic_cmd_pitch_deg_np, 'g--', label=f"Dynamic Command Pitch ({math.degrees(actual_cmd_pitch):.1f}° initial)") # Plot dynamic command
+    axs_kin[5].set_title("COM Velocity Pitch Angle in XZ Plane")
+    axs_kin[5].set_xlabel("Time (s)")
+    axs_kin[5].set_ylabel("Angle (degrees)")
+    axs_kin[5].set_ylim(-50, 50)
+    axs_kin[5].legend()
+    axs_kin[5].grid(True)
+    axs_kin[5].xaxis.set_major_locator(ticker.MultipleLocator(0.1))
+    axs_kin[5].xaxis.set_minor_locator(ticker.MultipleLocator(0.05))
+    axs_kin[5].xaxis.set_major_formatter(ticker.FormatStrFormatter('%.1f'))
+    add_all_phase_shading(axs_kin[5], time_np, jump_phase_np, add_legend_labels=False)
+
     # All Body Heights Plot
-    ax_all_bodies = axs_kin[5]
+    ax_all_bodies = axs_kin[6]
     robot_body_names = robot.body_names
     num_bodies = all_body_heights_np.shape[1]
     lines_bodies = []
@@ -851,6 +869,8 @@ def main():
         "initial_base_pitch_deg": args_cli.base_pitch,
         "initial_front_feet_offset_cm": args_cli.front_feet_offset,
         "initial_hind_feet_offset_cm": args_cli.hind_feet_offset,
+        # Termination information (will be updated during episode if termination occurs)
+        "termination_reasons": [],
     }
     
     # Note: Removed calculated ranges since we only use fixed command values
@@ -866,6 +886,8 @@ def main():
     with open(plot_params_path, 'w') as f:
         json.dump(run_params_dict, f, indent=4)
     print(f"[INFO] Saved plot run parameters to: {plot_params_path}")
+    
+    # Note: termination_reasons will be added to run_params_dict during episode execution if episode terminates
 
     # --- Save video run_params.json --- (REMOVED)
     # video_params_path = os.path.join(video_output_base_dir, f"{cmd_filename_suffix}_params.json")
@@ -944,6 +966,7 @@ def main():
     episode_joint_torques = []
     episode_target_positions = []
     episode_com_lin_vel = []
+    episode_com_lin_accel = []  # Add acceleration tracking
     episode_base_height = []
     episode_base_x_pos = []  # Add COM x-position tracking
     episode_jump_phase = []
@@ -955,7 +978,7 @@ def main():
     episode_all_body_heights = [] # ADDED: For storing all body heights
     episode_dynamic_cmd_pitch = [] # ADDED: For storing dynamic command pitch
     episode_dynamic_cmd_magnitude = [] # ADDED: For storing dynamic command magnitude
-
+    
     # reset environment
     obs = env.reset()
     if isinstance(obs, dict):
@@ -965,7 +988,6 @@ def main():
     # initialize RNN states if used
     if agent.is_rnn:
         agent.init_rnn()
-        
 
     # Wrap the simulation loop in a try...finally block
     try:
@@ -983,9 +1005,12 @@ def main():
                 target_positions = env.unwrapped.robot.data.joint_pos_target.clone().squeeze(0)
                 episode_target_positions.append(target_positions)
                 current_com_vel = env.unwrapped.center_of_mass_lin_vel.squeeze(0) # Squeeze batch dim
+                current_com_accel = env.unwrapped.center_of_mass_lin_accel.squeeze(0) # Squeeze batch dim
+                
                 current_base_height = env.unwrapped.robot.data.root_pos_w[:, 2].squeeze(0) # Squeeze batch dim
                 current_base_x_pos = env.unwrapped.robot.data.root_pos_w[:, 0].squeeze(0)  # Squeeze batch dim
                 episode_com_lin_vel.append(current_com_vel.clone())
+                episode_com_lin_accel.append(current_com_accel.clone())
                 episode_base_height.append(current_base_height.clone())
                 episode_base_x_pos.append(current_base_x_pos.clone())
                 current_jump_phase = env.unwrapped.jump_phase.clone().squeeze(0) # Squeeze batch dim
@@ -1014,6 +1039,7 @@ def main():
                 episode_dynamic_cmd_pitch.append(dynamic_pitch.clone())
                 episode_dynamic_cmd_magnitude.append(dynamic_magnitude.clone())
                 
+                
                 # Read from the general contact sensor (if needed for other plots)
                 current_contact_forces = general_contact_sensor.data.net_forces_w.clone().squeeze(0) # Squeeze batch dim
                 episode_contact_forces.append(current_contact_forces)
@@ -1029,6 +1055,39 @@ def main():
                 if len(dones) > 0 and dones[0]: # Check the first (and only) env
                     print("dones[0]: ", dones[0])
                     print(f"[INFO] Episode finished after {len(episode_actions)} steps.")
+                    
+                    # Log which termination condition(s) caused the episode to end
+                    termination_manager = env.unwrapped.termination_manager
+                    active_terminations = []
+                    
+                    # Check each termination term to see which ones are active
+                    for term_name in termination_manager.active_terms:
+                        term_value = termination_manager.get_term(term_name)
+                        if term_value[0].item():  # Check if termination is active for env 0
+                            active_terminations.append(term_name)
+                    
+                    # Also log whether this was a timeout vs. terminated
+                    was_timeout = termination_manager.time_outs[0].item()
+                    was_terminated = termination_manager.terminated[0].item()
+                    
+                    print(f"[INFO] Episode end details - Timeout: {was_timeout}, Terminated: {was_terminated}")
+                    
+                    if active_terminations:
+                        print(f"[INFO] Episode terminated by: {', '.join(active_terminations)}")
+                        # Store termination info for potential logging to WandB
+                        run_params_dict["termination_reasons"] = active_terminations
+                    else:
+                        print("[WARNING] Episode ended but no termination conditions were active")
+                        # This might happen in edge cases - log it as "unknown"
+                        run_params_dict["termination_reasons"] = ["unknown"]
+                    
+                    # Store additional termination metadata
+                    run_params_dict["episode_was_timeout"] = was_timeout
+                    run_params_dict["episode_was_terminated"] = was_terminated
+                    run_params_dict["episode_steps"] = len(episode_actions)
+                    
+                    
+                    
                     # Don't reset RNN state here, episode is over
                     break # Exit loop after first episode finishes
 
@@ -1039,6 +1098,12 @@ def main():
     finally:
         env.close() # Close the environment
         # No need to explicitly clear refs, Python GC will handle it.
+        
+        # Update and save run_params.json with final information including termination reasons
+        plot_params_path = os.path.join(run_specific_plots_dir, "run_params.json")
+        with open(plot_params_path, 'w') as f:
+            json.dump(run_params_dict, f, indent=4)
+        print(f"[INFO] Updated plot run parameters with final information at: {plot_params_path}")
 
         if args_cli.wandb:
             with open(os.path.join(log_dir, "params/agent.yaml"), "r") as f:
@@ -1052,7 +1117,23 @@ def main():
             wandb.init(id=run_id, project=run_project, resume="must")
             
             if args_cli.video:
-                save_video_to_wandb(video_folder, log_dir, run_id, run_project, dt, cmd_wandb_suffix, cmd_filename_suffix) 
+                save_video_to_wandb(video_folder, log_dir, run_id, run_project, dt, cmd_wandb_suffix, cmd_filename_suffix)
+            
+            # Log termination information to WandB if available
+            if "termination_reasons" in run_params_dict:
+                termination_info = {
+                    f"episode_termination/terminated_by_{reason}": 1 
+                    for reason in run_params_dict["termination_reasons"]
+                }
+                # Add a summary of termination reasons as a string
+                termination_info["episode_termination/reasons_summary"] = ", ".join(run_params_dict["termination_reasons"]) if run_params_dict["termination_reasons"] else "none"
+                
+                # Add timeout/terminated flags and episode length
+                termination_info["episode_termination/was_timeout"] = run_params_dict.get("episode_was_timeout", False)
+                termination_info["episode_termination/was_terminated"] = run_params_dict.get("episode_was_terminated", False)
+                termination_info["episode_termination/episode_steps"] = run_params_dict.get("episode_steps", 0)
+                
+                wandb.log(termination_info) 
 
         if args_cli.plot:
             print("[INFO] Preparing to plot data...") # Add print statement
@@ -1065,6 +1146,7 @@ def main():
                                           joint_angles=episode_joint_angles, 
                                           joint_torques=episode_joint_torques, 
                                           com_lin_vel=episode_com_lin_vel,
+                                          com_lin_accel=episode_com_lin_accel,  # Pass acceleration
                                           base_height=episode_base_height,
                                           base_x_pos=episode_base_x_pos,
                                           jump_phase=episode_jump_phase,

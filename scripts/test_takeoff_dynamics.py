@@ -21,17 +21,17 @@ from isaaclab.utils.math import quat_from_euler_xyz
 DEG2RAD = np.pi / 180.0
 robot_cfg = MarsJumperRobotCfg()
 
-episode_duration_steps = 50 # You might want to adjust this
+episode_duration_steps = 150 # You might want to adjust this
 
-gravity_on = False
+gravity_on = True
 
-root_height = 0.5
+root_height = 0.2
 
 #For setting constant angles
 use_constant_angles = True # Explicitly True for this script
 abductor_angle = 0.0 # Use robot_cfg.abductor_angle if defined and preferred
 hip_angle = 0 * DEG2RAD
-knee_angle = 45 * DEG2RAD
+knee_angle = 90 * DEG2RAD
 base_pitch = 0 * DEG2RAD
 initial_angle_targets = {
     "LF_HAA": abductor_angle, "LH_HAA": abductor_angle, "RF_HAA": abductor_angle, "RH_HAA": abductor_angle,
@@ -40,7 +40,7 @@ initial_angle_targets = {
 }
 
 #For transitioning to a jump
-do_takeoff = False # Set to True to test takeoff
+do_takeoff = True # Set to True to test takeoff
 takeoff_knee_angle = 0 * DEG2RAD # Example: more extended knee
 takeoff_hip_angle = 0 * DEG2RAD   # Example: more extended hip
 takeoff_angle_targets = {
@@ -165,12 +165,23 @@ def run_simulator(sim: sim_utils.SimulationContext, entities: dict, origins: tor
             joint_pos = robot.data.default_joint_pos.clone()
             joint_vel = robot.data.default_joint_vel.clone()
             
-            hip_joint_idx = robot.find_joints(robot.cfg.HIP_FLEXION_JOINTS_REGEX)[0]
-            knee_joint_idx = robot.find_joints(robot.cfg.KNEE_JOINTS_REGEX)[0]
-            abductor_joint_idx = robot.find_joints(robot.cfg.HIP_ABDUCTION_JOINTS_REGEX)[0]
+            # Renaming to align with full_jump_env.py's convention:
+            # full_jump_env.py: self.hip_joint_idx is HAA (abduction via ".*HAA.*")
+            #                   self.abduction_joint_idx is HFE (flexion via ".*HFE.*")
+            #                   self.knee_joint_idx is KFE (via ".*KFE.*")
+            # We assume robot.cfg.HIP_ABDUCTION_JOINTS_REGEX corresponds to HAA joints,
+            # robot.cfg.HIP_FLEXION_JOINTS_REGEX to HFE joints, and robot.cfg.KNEE_JOINTS_REGEX to KFE joints.
+            hip_joint_idx_env = robot.find_joints(".*HAA.*")[0] # For HAA joints
+            abduction_joint_idx_env = robot.find_joints(".*HFE.*")[0] # For HFE joints
+            knee_joint_idx_env = robot.find_joints(".*KFE.*")[0] # For KFE joints
 
-            joint_pos[:, hip_joint_idx] = hip_angle 
-            joint_pos[:, knee_joint_idx] = knee_angle 
+            # Set joint positions according to the script's angle variables and env-style index names:
+            # abductor_angle is for HAA joints (indexed by hip_joint_idx_env)
+            # hip_angle is for HFE joints (indexed by abduction_joint_idx_env)
+            # knee_angle is for KFE joints (indexed by knee_joint_idx_env)
+            joint_pos[:, hip_joint_idx_env] = abductor_angle
+            joint_pos[:, abduction_joint_idx_env] = hip_angle
+            joint_pos[:, knee_joint_idx_env] = knee_angle
             
             pitch_as_tensor = torch.tensor(base_pitch, device=sim.device)
             base_quat_w = quat_from_euler_xyz(torch.zeros_like(pitch_as_tensor), pitch_as_tensor, torch.zeros_like(pitch_as_tensor))
@@ -199,6 +210,7 @@ def run_simulator(sim: sim_utils.SimulationContext, entities: dict, origins: tor
             joint_indices, _ = robot.find_joints(joint_name)
             if joint_indices: # Ensure joint exists
                 robot.set_joint_position_target(target_pos, joint_ids=joint_indices)
+                robot.set_joint_velocity_target(0.0, joint_ids=joint_indices) # Add this for static poses
                     
         # Logging (only for the first episode or if logs are not cleared)
         if not plot_generated: # Log data only if the plot for the current episode hasn't been generated yet
@@ -233,7 +245,7 @@ def run_simulator(sim: sim_utils.SimulationContext, entities: dict, origins: tor
 def main():
     # Configure simulation context (e.g., dt, gravity)
     # Gravity should be enabled for takeoff dynamics
-    sim = sim_utils.SimulationContext(sim_utils.SimulationCfg(dt=1/500, gravity=(0.0, 0.0, -9.81 if gravity_on else 0.0)))
+    sim = sim_utils.SimulationContext(sim_utils.SimulationCfg(dt=1/360, gravity=(0.0, 0.0, -9.81 if gravity_on else 0.0)))
     sim.set_camera_view(eye=[0, 1.5, 0.5], target=[0.0, 0.0, 0.2]) # Adjusted camera for better view
     scene_entities, scene_origins = design_scene()
     scene_origins = torch.tensor(scene_origins, device=sim.device)

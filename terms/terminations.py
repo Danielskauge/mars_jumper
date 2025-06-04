@@ -1,37 +1,75 @@
 from __future__ import annotations
+from git import List
 import numpy as np
+from pyparsing import Literal
 import torch
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.envs import ManagerBasedRLEnv
+from isaaclab.sensors.contact_sensor.contact_sensor import ContactSensor
 from terms.utils import Phase
 
 DEG2RAD = np.pi/180
 
-def walking(
+def illegal_contact(env: ManagerBasedRLEnv, threshold: float, body: List[Literal["base", "thigh", "hip", "feet", "shank"]]) -> torch.Tensor:
+    """Terminate when the contact force on the sensor exceeds the force threshold."""
+    # extract the used quantities (to enable type-hinting)
+    net_contact_forces = env.contact_sensor.data.net_forces_w_history
+    # check if any contact force exceeds the threshold
+    
+    if body == "base":
+        body_ids = env.base_body_idx
+    elif body == "thigh":
+        body_ids = env.thighs_body_idx
+    elif body == "hip":
+        body_ids = env.hips_body_idx
+    elif body == "feet":
+        body_ids = env.feet_body_idx
+    elif body == "shank":
+        body_ids = env.shanks_body_idx
+    elif body == "all":
+        body_ids = env.bodies_except_feet_idx
+    else:
+        raise ValueError(f"Invalid body type: {body}")
+    
+    return torch.any(
+        torch.max(torch.norm(net_contact_forces[:, :, body_ids], dim=-1), dim=1)[0] > threshold, dim=1
+    )
+
+
+def landing_walking(
     env: ManagerBasedRLEnv,
+    x_tolerance: float = 0.15,
+    y_tolerance: float = 0.10,
 ) -> torch.Tensor:
-    """Terminate when the robot is walking, defined as the robot's root position has displaced more than 0.15 m in x or 0.1 m in y from its spawn position, during the takeoff phase."""
-    condition_phase = env.jump_phase == Phase.TAKEOFF
-
-    # Get the world positions of each environment's origin
-    # env.scene.env_origins has shape (num_envs, 3)
-    env_origins_w = env.scene.env_origins
-
-    # Get the initial positions relative to each environment's local origin
-    # env.robot.data.default_root_state[:, 0:3] has shape (num_envs, 3)
-    initial_pos_local_offset = env.robot.data.default_root_state[:, 0:3]
-
-    # Calculate the initial spawn positions in the world frame
-    spawn_pos_w = env_origins_w + initial_pos_local_offset
-
-    # Current positions in world frame
-    current_pos_w = env.robot.data.root_pos_w # Shape: (num_envs, 3)
-
-    # Displacement in world frame relative to actual spawn position
-    displacement_w = current_pos_w - spawn_pos_w
-
-    condition_pos_x = abs(displacement_w[:, 0]) > 0.30
-    condition_pos_y = abs(displacement_w[:, 1]) > 0.20
+    """Terminate when the robot is walking/moving too far from target position during landing phase.
+    
+    In landing phase, the robot should stay near the target landing position.
+    This termination triggers if the center of mass moves outside the allowed range
+    around the target position.
+    
+    Args:
+        env: The RL environment
+        x_tolerance: Allowed distance from target_length in x direction (meters)  
+        y_tolerance: Allowed distance from 0 in y direction (meters)
+    
+    Returns:
+        Boolean tensor indicating which environments should terminate due to walking
+    """
+    # Only apply during landing phase
+    condition_phase = env.jump_phase == Phase.LANDING
+    
+    # Target position: x should be target_length, y should be 0, z doesn't matter for this check
+    target_x = env.target_length  # Shape: (num_envs,)
+    target_y = torch.zeros_like(target_x)  # y target is 0
+    
+    # Calculate displacement from target position
+    x_displacement = torch.abs(env.com_pos[:, 0] - target_x)
+    y_displacement = torch.abs(env.com_pos[:, 1] - target_y)
+    
+    # Check if outside tolerance ranges
+    condition_pos_x = x_displacement > x_tolerance
+    condition_pos_y = y_displacement > y_tolerance
+    
     return condition_phase & (condition_pos_x | condition_pos_y)
 
 def takeoff_timeout(
@@ -39,6 +77,24 @@ def takeoff_timeout(
     timeout: float = 0.5,
 ) -> torch.Tensor:
     return (env.episode_length_buf * env.step_dt > timeout) & (env.jump_phase == Phase.TAKEOFF)
+
+def landing_timeout(
+    env: ManagerBasedRLEnv,
+    timeout: float = 0.5,
+) -> torch.Tensor:
+    """Terminate when the robot has been in landing phase for too long.
+    
+    Note: This checks total episode time while in landing phase. For precise phase 
+    duration tracking, the environment would need to track when landing phase started.
+    
+    Args:
+        env: The RL environment.
+        timeout: Maximum time allowed in landing phase (seconds).
+    
+    Returns:
+        Boolean tensor indicating which environments should terminate due to landing timeout.
+    """
+    return (env.episode_length_buf * env.step_dt > timeout) & (env.jump_phase == Phase.LANDING)
 
 def bad_knee_angle(
     env: ManagerBasedRLEnv) -> torch.Tensor:
@@ -52,7 +108,7 @@ def bad_takeoff_at_descent(
     env: ManagerBasedRLEnv,
     relative_error_threshold: float = 0.1,
 ) -> torch.Tensor:
-    return (env.takeoff_relative_error > relative_error_threshold) & (env.center_of_mass_lin_vel[:, 2] < 0.4) & env.flight_mask
+    return (env.takeoff_relative_error > relative_error_threshold) & (env.com_vel[:, 2] < 0.4) & env.flight_mask
 
 def bad_takeoff_at_flight(
     env: ManagerBasedRLEnv,
@@ -199,7 +255,7 @@ def failed_to_reach_target_height(
         Boolean tensor indicating which environments should terminate due to failed height reach.
     """
     in_flight_phase = env.jump_phase == Phase.FLIGHT
-    is_descending = env.center_of_mass_lin_vel[:, 2] < 0.3
+    is_descending = env.com_vel[:, 2] < 0.3
     height_error = env.target_height - env.max_height_achieved
     return in_flight_phase & is_descending & (height_error > height_threshold)
     

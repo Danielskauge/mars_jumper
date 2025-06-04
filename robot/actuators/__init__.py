@@ -1,1 +1,1 @@
-from .actuators import CustomServo, CustomServoCfg, ParallelElasticActuator, ParallelElasticActuatorCfg
+from .gru_actuator import GruActuator

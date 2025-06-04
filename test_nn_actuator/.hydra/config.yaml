@@ -1,0 +1,83 @@
+debug: false
+seed: 42
+evaluation_mode: global
+work_dir: ${hydra:runtime.cwd}
+outputs_dir: ${hydra:runtime.output_dir}
+wandb:
+  active: true
+  project: actuator_modeling_gru_v2
+  entity: ''
+  name_suffix: debug
+  group_suffix: initial_tests
+  watch_log_freq: 100
+data:
+  _target_: src.data.datamodule.ActuatorDataModule
+  data_base_dir: data/synthetic_raw
+  inertia_groups:
+  - id: test_inertia
+    folder: 0.083kgm2
+    inertia: 0.083
+  target_name: tau_measured
+  gyro_axis_for_ang_vel: Gyro_Z
+  accel_axis_for_torque: Acc_Y
+  batch_size: 32
+  num_workers: 4
+  seed: ${seed}
+  global_train_ratio: 0.7
+  global_val_ratio: 0.15
+  radius_accel: 0.2
+model:
+  model_type:
+    name: gru
+  _target_: src.models.model.ActuatorModel
+  learning_rate: 0.001
+  weight_decay: 1.0e-06
+  warmup_epochs: 1
+  use_residual: false
+  k_spring: 0.0
+  theta0: 0.0
+  kp_phys: 0.0
+  kd_phys: 0.0
+  pd_stall_torque_phys_training: null
+  pd_no_load_speed_phys_training: null
+  loss_diff_weight: 0.1
+  gru_hidden_dim: 128
+  gru_num_layers: 2
+  gru_dropout: 0.1
+train:
+  model: ../model/default.yaml
+  data: ../data/actuator_data.yaml
+  batch_size: ${data.batch_size}
+  learning_rate: ${model.learning_rate}
+  weight_decay: ${model.weight_decay}
+  max_epochs: 200
+  patience: 20
+  num_workers: 4
+  log_frequency: 50
+  val_check_interval: 1.0
+  wandb:
+    project_name: actuator-modeling
+  accelerator: auto
+  devices: 1
+  precision: 32-true
+  early_stopping:
+    active: true
+    monitor: val_rmse_epoch
+    mode: min
+    patience: 20
+    min_delta: 0.0001
+    verbose: true
+    stopping_threshold: null
+  checkpointing:
+    monitor: val_rmse_epoch
+    mode: min
+    save_top_k: 1
+    filename: best_model-{epoch:02d}-{val_rmse_epoch:.4f}
+  deterministic_trainer: true
+  gradient_clip_val: 5.0
+  gradient_clip_algorithm: norm
+  callbacks:
+    learning_rate_monitor: true
+    early_summary: false
+    test_prediction_plotter: true
+  export_jit_model: true

@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import torch
+import os # Added for path joining
+import json # For loading model summary
 
 from isaaclab.utils.types import ArticulationActions
 
 from isaaclab.actuators import IdealPDActuator
-from isaaclab.actuators import IdealPDActuatorCfg
+from isaaclab.actuators.actuator_cfg import IdealPDActuatorCfg, DCMotorCfg, ActuatorNetLSTMCfg
+from isaaclab.actuators.actuator_pd import DCMotor
+from isaaclab.actuators.actuator_net import ActuatorNetLSTM
 
-from dataclasses import MISSING
 from isaaclab.utils import configclass
+
 
 
 class CustomServo(IdealPDActuator):
@@ -23,8 +27,22 @@ class CustomServo(IdealPDActuator):
         self.log_counter = 0
         self.log_interval = 1000
         
-        assert (cfg.velocity_limit > 0.0), "The velocity limit must be positive."
-        assert (cfg.effort_limit >= 0.0), "The effort limit  must be non-negative."
+        # Assuming that if velocity_limit and effort_limit are set, they are floats for CustomServo.
+        # The base IdealPDActuatorCfg allows for dicts, which CustomServo isn't explicitly handling here.
+        # This might need more robust handling if dicts are expected at this level.
+        if cfg.velocity_limit is not None and isinstance(cfg.velocity_limit, float):
+            assert (cfg.velocity_limit > 0.0), "The velocity limit must be positive."
+        elif cfg.velocity_limit is not None: # It's a dict
+            # For now, let's assume if it's a dict, this specific actuator expects it to be resolved
+            # or this is a configuration error for this simplified CustomServo.
+            # We will rely on IdealPDActuator to have processed it if it's a dict.
+            # If a direct float is needed here, the config for CustomServo should ensure it's passed as float.
+            pass # Or raise an error if CustomServo specifically needs a float and got a dict
+        
+        if cfg.effort_limit is not None and isinstance(cfg.effort_limit, float):
+            assert (cfg.effort_limit >= 0.0), "The effort limit must be non-negative."
+        elif cfg.effort_limit is not None: # It's a dict
+            pass # Similar reasoning as for velocity_limit
         
         print(f"\n")
         print(f"motor armature: {self.armature}")
@@ -136,24 +154,3 @@ class CustomServoCfg(IdealPDActuatorCfg):
     """
 
     class_type: type = CustomServo
-
-class ParallelElasticActuator(CustomServo):
-    """The parallell elastic actuator class."""
-    
-    cfg: ParallelElasticActuatorCfg
-    """The configuration for the actuator model."""
-    
-    def compute(
-        self,
-        control_action: ArticulationActions,
-        joint_pos: torch.Tensor,
-        joint_vel: torch.Tensor,
-    ) -> ArticulationActions:
-        control_action = super().compute(control_action, joint_pos, joint_vel)
-        control_action.joint_efforts = control_action.joint_efforts + self.cfg.spring_stiffness * (self.cfg.spring_equilibrium_angle - joint_pos)
-        return control_action
-    
-class ParallelElasticActuatorCfg(CustomServoCfg):
-    class_type: type = ParallelElasticActuator
-    spring_stiffness: float = MISSING # The stiffness of the spring (in N/m). Must be positive.
-    spring_equilibrium_angle: float = MISSING # The angle of the equilibrium point (in rad).

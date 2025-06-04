@@ -36,6 +36,7 @@ def has_taken_off(
         env.jump_phase = torch.full((env.num_envs,), Phase.TAKEOFF, dtype=torch.int32, device=env.device)
 
     return ((env.jump_phase == Phase.LANDING) | (env.jump_phase == Phase.FLIGHT)).float().unsqueeze(-1)
+    
 
 def base_rotation_vector(
     env: ManagerBasedRLEnv,
@@ -60,23 +61,6 @@ def base_rotation_vector(
     
     return rot_vec
 
-def takeoff_vel_vec_cmd(
-    env: ManagerBasedRLEnv,
-) -> torch.Tensor:
-    """Observation that returns the takeoff velocity vector command.
-    
-    Args:
-        env: The environment instance.
-        
-    Returns:
-        A tensor of shape (num_envs, 2) with the takeoff velocity vector command (pitch, magnitude)
-    """
-    # During observation manager initialization, command_manager might not be fully set up
-    if not hasattr(env, "_command_buffer") or env._command_buffer is None:
-        # Return a dummy tensor with the expected shape (num_envs, 2)
-        return torch.zeros((env.num_envs, 2), device=env.device)
-    
-    return env._command_buffer
 
 def takeoff_height_length_cmd(
     env: ManagerBasedRLEnv,
@@ -99,3 +83,54 @@ def takeoff_height_length_cmd(
     
     # Directly return the height and length targets
     return torch.stack([env.target_height, env.target_length], dim=-1)
+
+
+
+
+def base_pos_z_with_latency(
+    env: ManagerBasedEnv, 
+    latency_ms: float = 0.0,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+) -> torch.Tensor:
+    """Root height in the simulation world frame with configurable latency.
+    
+    Args:
+        env: The environment instance
+        latency_ms: Latency in milliseconds (0 = no delay)
+        asset_cfg: Asset configuration
+        
+    Returns:
+        Root height tensor with shape (num_envs, 1), potentially delayed
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    current_obs = asset.data.root_pos_w[:, 2].unsqueeze(-1)
+
+    if latency_ms <= 0:
+        return current_obs
+
+    latency_steps = int(latency_ms / 1000.0 / env.step_dt)
+    buffer_size = latency_steps + 1  # Always need one extra slot for ring buffer
+
+    if not hasattr(env, '_base_height_latency_buffer') or env._base_height_latency_buffer.shape[0] != buffer_size:
+        env._base_height_latency_buffer = torch.zeros(
+            (buffer_size, env.num_envs, 1),
+            device=env.device,
+            dtype=current_obs.dtype
+        )
+        env._base_height_buffer_write_index = 0
+
+    buf = env._base_height_latency_buffer
+    write_idx = env._base_height_buffer_write_index % buffer_size
+    buf[write_idx] = current_obs
+
+    # Clamp delay to buffer capacity
+
+    if env._base_height_buffer_write_index >= latency_steps:
+        read_idx = (write_idx - latency_steps) % buffer_size
+        delayed_obs = buf[read_idx]
+    else:
+        delayed_obs = current_obs
+
+    env._base_height_buffer_write_index += 1
+
+    return delayed_obs

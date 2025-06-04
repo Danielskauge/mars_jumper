@@ -12,7 +12,7 @@ the curriculum introduced by the function.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Tuple
+from typing import TYPE_CHECKING, Tuple, Dict, Any
 
 import torch
 
@@ -39,6 +39,127 @@ def modify_reward_weight(env: ManagerBasedRLEnv, env_ids: Sequence[int], term_na
         # update term settings
         term_cfg.weight = weight
         env.reward_manager.set_term_cfg(term_name, term_cfg)
+
+
+def progress_reward_weights_by_metric(
+    env: ManagerBasedRLEnv,
+    env_ids: Sequence[int],
+    metric_name: str = "full_jump_success_rate",
+    reward_weight_configs: Dict[str, Dict[str, Any]] = None,
+    min_steps_between_updates: int = 100,
+    smoothing_factor: float = 0.1,
+) -> None:
+    """Gradually increase reward weights based on a success metric.
+    
+    Args:
+        env: The environment instance
+        env_ids: Not used since all environments are affected
+        metric_name: Name of the metric attribute to track (e.g., "full_jump_success_rate")
+        reward_weight_configs: Dict mapping reward term names to their config:
+            {
+                "reward_term_name": {
+                    "initial_weight": float,    # Starting weight
+                    "target_weight": float,     # Final weight when metric reaches target
+                    "metric_threshold": float,  # Metric value at which target_weight is reached
+                    "metric_start": float,      # Metric value at which progression starts (default: 0.0)
+                }
+            }
+        min_steps_between_updates: Minimum steps between weight updates
+        smoothing_factor: How much to adjust weights per update (0-1)
+    """
+    
+    # Initialize tracking attributes
+    if not hasattr(env, "reward_weight_steps_since_update"):
+        env.reward_weight_steps_since_update = 0
+    if not hasattr(env, "reward_weight_initial_weights"):
+        env.reward_weight_initial_weights = {}
+        
+    # Default configuration if none provided
+    if reward_weight_configs is None:
+        reward_weight_configs = {
+            "attitude_landing": {
+                "initial_weight": 0.05,
+                "target_weight": 0.3,
+                "metric_threshold": 0.8,
+                "metric_start": 0.3,
+            },
+            "attitude_landing_trans": {
+                "initial_weight": 10.0,
+                "target_weight": 50.0,
+                "metric_threshold": 0.8,
+                "metric_start": 0.3,
+            },
+        }
+    
+    env.reward_weight_steps_since_update += 1
+    
+    # Only update weights periodically
+    if env.reward_weight_steps_since_update < min_steps_between_updates:
+        return
+        
+    env.reward_weight_steps_since_update = 0
+    
+    # Get current metric value
+    current_metric = getattr(env, metric_name, 0.0)
+    
+    # Update weights for each configured reward term
+    for reward_name, config in reward_weight_configs.items():
+        try:
+            # Get configuration values
+            initial_weight = config["initial_weight"]
+            target_weight = config["target_weight"]
+            metric_threshold = config["metric_threshold"]
+            metric_start = config.get("metric_start", 0.0)
+            
+            # Store initial weight if not already stored
+            if reward_name not in env.reward_weight_initial_weights:
+                try:
+                    current_term_cfg = env.reward_manager.get_term_cfg(reward_name)
+                    env.reward_weight_initial_weights[reward_name] = current_term_cfg.weight
+                except:
+                    env.reward_weight_initial_weights[reward_name] = initial_weight
+                    logger.warning(f"Could not get initial weight for {reward_name}, using configured initial_weight")
+            
+            # Calculate progress ratio
+            if current_metric <= metric_start:
+                progress_ratio = 0.0
+            elif current_metric >= metric_threshold:
+                progress_ratio = 1.0
+            else:
+                progress_ratio = (current_metric - metric_start) / (metric_threshold - metric_start)
+            
+            # Calculate target weight based on progress
+            new_weight = initial_weight + progress_ratio * (target_weight - initial_weight)
+            
+            # Get current weight and apply smoothing
+            try:
+                current_term_cfg = env.reward_manager.get_term_cfg(reward_name)
+                current_weight = current_term_cfg.weight
+                
+                # Smooth the weight update
+                smoothed_weight = current_weight + smoothing_factor * (new_weight - current_weight)
+                
+                # Update the weight
+                current_term_cfg.weight = smoothed_weight
+                env.reward_manager.set_term_cfg(reward_name, current_term_cfg)
+                
+                logger.debug(f"Updated {reward_name} weight: {current_weight:.4f} -> {smoothed_weight:.4f} "
+                           f"(target: {new_weight:.4f}, metric: {current_metric:.3f})")
+                           
+            except Exception as e:
+                logger.warning(f"Failed to update weight for reward term '{reward_name}': {e}")
+                
+        except KeyError as e:
+            logger.warning(f"Missing configuration key for reward term '{reward_name}': {e}")
+        except Exception as e:
+            logger.warning(f"Error processing reward term '{reward_name}': {e}")
+    
+    return {
+        "metric_value": current_metric,
+        "reward_weights": {name: env.reward_manager.get_term_cfg(name).weight 
+                          for name in reward_weight_configs.keys() 
+                          if name in env.reward_manager._terms}
+    }
 
 
 def progress_command_ranges(

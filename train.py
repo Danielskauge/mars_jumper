@@ -229,6 +229,9 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             if hasattr(env_cfg, "command_ranges"):
                 command_ranges_dict = class_to_dict(env_cfg.command_ranges)
                 run.config.update({"command_ranges": command_ranges_dict}, allow_val_change=True) # Log command ranges
+            if hasattr(env_cfg.scene, "robot"):
+                robot_dict = class_to_dict(env_cfg.scene.robot)
+                run.config.update({"robot": robot_dict}, allow_val_change=True) # Log robot config
 
             # Log event parameters for reset_robot_pose_with_feet_on_ground
             if hasattr(env_cfg, "events") and hasattr(env_cfg.events, "reset_robot_pose_with_feet_on_ground"):

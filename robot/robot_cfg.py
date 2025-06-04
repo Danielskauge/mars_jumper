@@ -3,18 +3,17 @@ import numpy as np
 import torch
 from typing import Tuple, List
 
-from isaaclab.actuators.actuator_cfg import ImplicitActuatorCfg, ActuatorNetLSTMCfg
+from isaaclab.actuators.actuator_cfg import ImplicitActuatorCfg, ActuatorNetLSTMCfg, IdealPDActuatorCfg
+#from robot.actuators.gru_actuator_cfg import CombinedGRUAndPDActuatorCfg
 import isaaclab.sim as sim_utils
 from isaaclab.assets.articulation import ArticulationCfg
 from isaaclab.utils.configclass import configclass
+from isaaclab.utils.assets import ISAACLAB_NUCLEUS_DIR
+
 
 DEG2RAD = torch.pi / 180.0
 RPM2RADPS = 2.0 * torch.pi / 60.0
 
-# Define limits constants first
-HIP_FLEXION_LIMITS: Tuple[float, float] = (-np.pi, np.pi)
-KNEE_LIMITS: Tuple[float, float] = (0, 175*DEG2RAD)
-ABDUCTION_LIMITS: Tuple[float, float] = (-np.pi, np.pi)
 
 @configclass
 class MarsJumperRobotCfg(ArticulationCfg):
@@ -22,16 +21,17 @@ class MarsJumperRobotCfg(ArticulationCfg):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         
-        self.HAA_REGEX: str = ".*_HAA" # NOTE: Mismatched names in comments vs. regex - assuming regex is correct
-        self.HFE_REGEX: str = ".*_HFE" # NOTE: Mismatched names in comments vs. regex - assuming regex is correct
+        self.HAA_REGEX: str = ".*_HAA" 
+        self.HFE_REGEX: str = ".*_HFE" 
         self.KFE_REGEX: str = ".*_KFE"
         self.FEET_REGEX: str = ".*FOOT.*"
         self.AVOID_CONTACT_BODIES_REGEX: List[str] = [".*base.*", ".*HIP.*", ".*THIGH.*", ".*SHANK.*"]
         
         # Store limits as attributes if needed elsewhere, but primarily use constants
-        self.hip_joint_limits = HIP_FLEXION_LIMITS 
-        self.knee_joint_limits = KNEE_LIMITS
-        self.abduction_joint_limits = ABDUCTION_LIMITS
+        # Define limits constants first
+        self.HIP_FLEXION_LIMITS: Tuple[float, float] = (-np.pi, np.pi)
+        self.KNEE_LIMITS: Tuple[float, float] = (20*DEG2RAD, 150*DEG2RAD)
+        self.ABDUCTION_LIMITS: Tuple[float, float] = (-70*DEG2RAD, 70*DEG2RAD)
 
         self.HIP_LINK_LENGTH: float = 0.11
         self.KNEE_LINK_LENGTH: float = 0.11
@@ -78,7 +78,29 @@ class MarsJumperRobotCfg(ArticulationCfg):
                 
             ),
         }
-    
+        
+        explicit_actuators = {
+            "motors": IdealPDActuatorCfg(
+                joint_names_expr=[".*HAA", ".*HFE", ".*KFE"],
+                stiffness=10,
+                damping=0.2,
+                effort_limit=2,
+            ),
+        }
+            
+        # ANYDRIVE_3_LSTM_ACTUATOR_CFG = CombinedGRUAndPDActuatorCfg(
+        #     joint_names_expr=[".*HAA", ".*HFE", ".*KFE"],
+        #     network_file=f"{ISAACLAB_NUCLEUS_DIR}/ActuatorNets/ANYbotics/anydrive_3_lstm_jit.pt",
+        #     gru_num_layers=2,
+        #     gru_hidden_dim=128,
+        #     gru_sequence_length=2,
+        #     nn_weight=1.0,
+        #     apply_pd_control=True,
+        #     apply_pd_torque_speed_curve=True,
+        #     pd_stall_torque=2.0,
+        #     pd_no_load_speed=7.5,
+        # )
+        
         spawn=sim_utils.UsdFileCfg(
                 usd_path=f"{os.getcwd()}/USD_files/moved_motor_usd_limits/moved_motor_usd_limits.usd",
                 activate_contact_sensors=True,
