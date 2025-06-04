@@ -37,17 +37,6 @@ from isaaclab.envs import ManagerBasedRLEnv
 # Helper Functions
 # =================================================================================
 
-def update_env_data(env: ManagerBasedRLEnv) -> torch.Tensor:
-    env.com_vel = env.get_com_vel()
-    env.com_pos = env.get_com_pos()
-    env.com_acc = env.get_com_acc()
-    env.update_dynamic_takeoff_vector()
-    return torch.zeros(env.num_envs, device=env.device)
-    
-def update_jump_phase(env: ManagerBasedRLEnv) -> torch.Tensor:
-    env.update_jump_phase()
-    return torch.zeros(env.num_envs, device=env.device)
-
 def _get_active_envs_mask(env: ManagerBasedRLEnv, phases: list[Phase]) -> torch.Tensor:
     """Get boolean mask for environments active in specified phases."""
     active_mask = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
@@ -119,7 +108,7 @@ def landing_com_vel(env: ManagerBasedRLEnv,
         return reward_tensor
     
     landing_env_ids = env.landing_mask.nonzero(as_tuple=False).squeeze(-1)
-    landing_com_vel = env.com_vel[landing_env_ids]
+    landing_com_vel = env.get_com_vel()[landing_env_ids]
     norm = torch.norm(landing_com_vel, dim=-1)
     values = _apply_kernel(norm, kernel, scale, delta, e_max)
     reward_tensor[landing_env_ids] = values
@@ -295,8 +284,8 @@ def cmd_error(env: ManagerBasedRLEnv, kernel: Kernel, scale: float = 7.0, delta:
     if not torch.any(env.takeoff_mask):
         return reward_tensor
 
-    takeoff_vector = env.dynamic_takeoff_vector[env.takeoff_mask] 
-    robot_vel_vec = env.com_vel[env.takeoff_mask] 
+    takeoff_vector = env.get_dynamic_takeoff_vector(env.takeoff_mask) 
+    robot_vel_vec = env.get_com_vel()[env.takeoff_mask] 
 
     error_vec = robot_vel_vec - takeoff_vector
     if error_type == "relative":
@@ -341,8 +330,8 @@ def liftoff_relative_cmd_error(env: ManagerBasedRLEnv, kernel: Kernel, scale: fl
     if transitioned_env_ids.numel() == 0:
         return reward_tensor
         
-    takeoff_vector = env.dynamic_takeoff_vector[transitioned_env_ids]
-    robot_vel_vec = env.com_vel[transitioned_to_flight]
+    takeoff_vector = env.get_dynamic_takeoff_vector(transitioned_env_ids)
+    robot_vel_vec = env.get_com_vel()[transitioned_to_flight]
     
     relative_error = torch.norm(robot_vel_vec - takeoff_vector, dim=-1) / torch.norm(takeoff_vector, dim=-1)
     
@@ -413,8 +402,8 @@ def takeoff_angle_error(env: ManagerBasedRLEnv, kernel: Kernel, scale: float | i
         return reward
 
     takeoff_env_ids = env.takeoff_mask.nonzero(as_tuple=False).squeeze(-1)
-    takeoff_vector = env.dynamic_takeoff_vector[takeoff_env_ids]         # [M,3]
-    com_lin_vel = env.com_vel[env.takeoff_mask]    # [M,3]
+    takeoff_vector = env.get_dynamic_takeoff_vector(takeoff_env_ids)         # [M,3]
+    com_lin_vel = env.get_com_vel()[env.takeoff_mask]    # [M,3]
 
     takeoff_vector_norm = takeoff_vector.norm(dim=1)     # [M]
     com_lin_vel_norm = com_lin_vel.norm(dim=1)     # [M]
@@ -466,7 +455,7 @@ def attitude_descent(env: ManagerBasedRLEnv,
     
     rewards_for_flight_phase = torch.zeros(torch.sum(env.flight_mask), device=env.device)
 
-    com_vel_flight_envs = env.com_vel[env.flight_mask]
+    com_vel_flight_envs = env.get_com_vel()[env.flight_mask]
     actually_reward_mask_within_flight = com_vel_flight_envs[:, 2] < 0.01
 
     if torch.any(actually_reward_mask_within_flight):
@@ -540,13 +529,15 @@ def relative_cmd_error_huber(env: ManagerBasedRLEnv, delta: float, e_max: float)
     if not torch.any(takeoff_envs):
         return torch.zeros(env.num_envs, device=env.device)
     
+    com_vel = env.get_com_vel()
+    
     takeoff_env_ids = takeoff_envs.nonzero(as_tuple=False).squeeze(-1)
-    takeoff_vector = env.dynamic_takeoff_vector[takeoff_env_ids]
+    takeoff_vector = env.get_dynamic_takeoff_vector(takeoff_env_ids)
     reward_tensor = torch.zeros(env.num_envs, device=env.device)
-    relative_error = torch.norm(env.com_vel - takeoff_vector, dim=-1) / torch.norm(takeoff_vector, dim=-1)
+    relative_error = torch.norm(com_vel - takeoff_vector, dim=-1) / torch.norm(takeoff_vector, dim=-1)
     reward_tensor[takeoff_envs] = shifted_huber_kernel(e=relative_error, delta=delta, e_max=e_max)[takeoff_envs]
 
-    vertical_velocity = env.com_vel[:, 2]
+    vertical_velocity = com_vel[:, 2]
     downward_mask = vertical_velocity < 0
 
     reward_tensor[downward_mask] = 0    
@@ -652,7 +643,7 @@ def yaw_penalty(env: ManagerBasedRLEnv,
     if Phase.FLIGHT in phases:
         flight_mask = (env.flight_mask) & active_mask
         if torch.any(flight_mask):
-            ascending_mask = env.com_vel[:, 2] > 0
+            ascending_mask = env.get_com_vel()[:, 2] > 0
             # Only keep flight environments that are ascending
             active_mask = active_mask & (~flight_mask | ascending_mask)
     
@@ -690,7 +681,7 @@ def roll_penalty(env: ManagerBasedRLEnv,
     if Phase.FLIGHT in phases:
         flight_mask = (env.jump_phase == Phase.FLIGHT) & active_mask
         if torch.any(flight_mask):
-            ascending_mask = env.com_vel[:, 2] > 0
+            ascending_mask = env.get_com_vel()[:, 2] > 0
             # Only keep flight environments that are ascending
             active_mask = active_mask & (~flight_mask | ascending_mask)
     
@@ -734,7 +725,7 @@ def landing_walking(env: ManagerBasedRLEnv,
     
     if torch.any(env.landing_mask):
         # Get current center of mass position (already in environment local frame)
-        current_com_pos = env.com_pos[env.landing_mask]  # Shape: (active_envs, 3)
+        current_com_pos = env.get_com_pos()[env.landing_mask]  # Shape: (active_envs, 3)
         
         # Target position: x should be target_length, y should be 0
         target_x = env.target_length[env.landing_mask]  # Shape: (active_envs,)

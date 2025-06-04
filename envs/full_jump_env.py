@@ -115,56 +115,16 @@ class FullJumpEnv(ManagerBasedRLEnv):
         obs_buf, reward_buf, terminated_buf, truncated_buf, extras = super().step(action) #Must be after updating jump phase since rewards are based on active phase
         #Now state k
         
-        print(f"com_vel_z_mean: {self.com_vel[:, 2].mean().item()}")
-        print(f"com_acc_z_mean: {self.com_acc[:, 2].mean().item()}")
-        print(f"com_pos_z_mean: {self.com_pos[:, 2].mean().item()}")
-        print(f"dynamic_takeoff_vector_z_mean: {self.dynamic_takeoff_vector[:, 2].mean().item()}")
-        
-        # Check if any dynamic takeoff vectors are NaNs
-        nan_vector_mask = torch.any(torch.isnan(self.dynamic_takeoff_vector), dim=1)
-        if torch.any(nan_vector_mask):
-            num_nan_vectors = torch.sum(nan_vector_mask).item()
-            print(f"CRITICAL WARNING: {num_nan_vectors}/{self.num_envs} dynamic takeoff vectors are NaN!")
-            
-            nan_vector_env_ids = nan_vector_mask.nonzero(as_tuple=True)[0]
-            if len(nan_vector_env_ids) > 0:
-                first_nan_env_id = nan_vector_env_ids[0]
-                print(f"Debug info for first NaN env ({first_nan_env_id}):")
-                print(f"  Target Height: {self.target_height[first_nan_env_id].item()}")
-                print(f"  Target Length: {self.target_length[first_nan_env_id].item()}")
-                print(f"  COM Pos: {self.com_pos[first_nan_env_id]}")
-                # For more detailed debugging, you might need to inspect intermediate values
-                # within get_dynamic_takeoff_vector or its sub-functions for this specific environment.
-                # Example:
-                # _, _, com_pos_debug = self.target_height[first_nan_env_id], self.target_length[first_nan_env_id], self.com_pos[first_nan_env_id]
-                # pitch_debug, magnitude_debug = convert_height_length_to_pitch_magnitude_from_position(
-                #    self.target_height[first_nan_env_id].unsqueeze(0), 
-                #    self.target_length[first_nan_env_id].unsqueeze(0), 
-                #    self.com_pos[first_nan_env_id].unsqueeze(0), 
-                #    gravity=9.81
-                # )
-                # print(f"  Calculated Pitch: {pitch_debug.item()}, Magnitude: {magnitude_debug.item()}")
-
-        # Check if any dynamic takeoff vectors are zeros
-        zero_vectors_mask = torch.all(self.dynamic_takeoff_vector == 0, dim=1)
-        if torch.any(zero_vectors_mask):
-            num_zero_vectors = torch.sum(zero_vectors_mask).item()
-            print(f"WARNING: {num_zero_vectors}/{self.num_envs} dynamic takeoff vectors are zeros")
-            
-            # Optional: Print additional debug info about environments with zero vectors
-            zero_vector_env_ids = zero_vectors_mask.nonzero(as_tuple=True)[0]
-            if len(zero_vector_env_ids) > 0:
-                print(f"Example env with zero vector - target height: {self.target_height[zero_vector_env_ids[0]].item()}, "
-                      f"target length: {self.target_length[zero_vector_env_ids[0]].item()}, "
-                      f"com pos: {self.com_pos[zero_vector_env_ids[0]]}")
-        
         # Accumulate phase-specific rewards
         # These masks represent the phase *before* update_jump_phase() is called for the current step k
         # So, reward_buf[self.takeoff_mask] are rewards generated while in takeoff phase
         self.takeoff_reward_sum[self.takeoff_mask] += reward_buf[self.takeoff_mask]
         self.flight_reward_sum[self.flight_mask] += reward_buf[self.flight_mask]
         self.landing_reward_sum[self.landing_mask] += reward_buf[self.landing_mask]
-
+        
+        self.com_vel = self.get_com_vel()
+        self.com_pos = self.get_com_pos()
+        self.com_acc = self.get_com_acc()
         current_height = self.com_pos[:, 2]
         new_max_height_mask = (current_height > self.max_height_achieved)
         self.max_height_achieved[new_max_height_mask] = current_height[new_max_height_mask]
@@ -176,6 +136,10 @@ class FullJumpEnv(ManagerBasedRLEnv):
         bucketed_logs = self.log_bucketed_errors()
         self.extras["log"].update(bucketed_logs)
 
+        # Update dynamic takeoff vector for all environments in takeoff phase
+        if torch.any(self.takeoff_mask):
+            takeoff_env_ids = self.takeoff_mask.nonzero(as_tuple=False).squeeze(-1)
+            self.dynamic_takeoff_vector[takeoff_env_ids] = self.get_dynamic_takeoff_vector(takeoff_env_ids)
 
         # Capture velocity vectors at the moment of takeoff-to-flight transition
         if torch.any(self.takeoff_to_flight_mask):
@@ -213,13 +177,7 @@ class FullJumpEnv(ManagerBasedRLEnv):
             feet_height = self.robot.data.body_pos_w[self.landing_mask][:, self.feet_body_idx, 2]
             self.feet_height_at_landing[self.landing_mask] = torch.mean(feet_height, dim=-1)
             self.attitude_error_at_landing[self.landing_mask] = self._abs_angle_error(self.robot.data.root_quat_w[self.landing_mask])
-            landing_com_vel_norm = torch.norm(self.com_vel[self.landing_mask], dim=-1)
-            self.extras["log"]["landing_com_vel_norm"] = landing_com_vel_norm.mean().item()
-            self.landing_time_tracker[self.landing_mask] += self.step_dt
-
-        else:
-            self.extras["log"]["landing_com_vel_norm"] = float('nan')
-
+        
         current_sum_contact_forces = self.sum_contact_forces() # Avoid rebinding self.sum_contact_forces
         self.extras["log"]["takeoff_contact_forces"] = current_sum_contact_forces[self.takeoff_mask].mean().item() if torch.any(self.takeoff_mask) else float('nan')
         self.extras["log"]["flight_contact_forces"] = current_sum_contact_forces[self.flight_mask].mean().item() if torch.any(self.flight_mask) else float('nan')
@@ -232,6 +190,16 @@ class FullJumpEnv(ManagerBasedRLEnv):
             self.extras["log"]["flight_angle_error"] = mean_flight_angle_error
         else:
             self.extras["log"]["flight_angle_error"] = float('nan')
+
+        if torch.any(self.landing_mask):
+            landing_com_vel_norm = torch.norm(self.com_vel[self.landing_mask], dim=-1)
+            self.extras["log"]["landing_com_vel_norm"] = landing_com_vel_norm.mean().item()
+        else:
+            self.extras["log"]["landing_com_vel_norm"] = float('nan')
+
+        # Update landing time tracker
+        if torch.any(self.landing_mask):
+            self.landing_time_tracker[self.landing_mask] += self.step_dt
 
         if self.cfg.curriculum is not None:
             self.steps_since_curriculum_update += 1
@@ -273,7 +241,7 @@ class FullJumpEnv(ManagerBasedRLEnv):
             # Sample new commands before calling super()._reset_idx
             self.sample_command(env_ids)   
             
-            #self.update_dynamic_takeoff_vector()
+            self.dynamic_takeoff_vector[env_ids] = self.get_dynamic_takeoff_vector(env_ids)
 
             # --- Call super()._reset_idx ---
             # This triggers event manager's reset mode, including reset_robot_initial_state -> reset_robot_flight_state
@@ -582,7 +550,7 @@ class FullJumpEnv(ManagerBasedRLEnv):
         self.target_height[env_ids] = torch.empty(len(env_ids), device=self.device).uniform_(*self.cmd_height_range)
         self.target_length[env_ids] = torch.empty(len(env_ids), device=self.device).uniform_(*self.cmd_length_range)
         
-    def update_dynamic_takeoff_vector(self) -> torch.Tensor:
+    def get_dynamic_takeoff_vector(self, env_ids: torch.Tensor) -> torch.Tensor:
         """Calculate the required takeoff velocity vector based on current COM position and target trajectory.
         
         This function continuously updates the required velocity vector based on:
@@ -593,25 +561,17 @@ class FullJumpEnv(ManagerBasedRLEnv):
         Returns:
             Tensor of shape (num_envs or len(env_ids), 3) containing [x, y, z] velocity components
         """
-   
+        target_height = self.target_height[env_ids]
+        target_length = self.target_length[env_ids]
+        com_pos = self.get_com_pos()[env_ids]
+        
+        pitch, magnitude = convert_height_length_to_pitch_magnitude_from_position(
+            target_height, target_length, com_pos, gravity=9.81
+        )
+        
 
-        gravity = 9.81
-        delta_height = self.target_height[self.takeoff_mask] - self.com_pos[self.takeoff_mask, 2]
-        delta_length = self.target_length[self.takeoff_mask] - self.com_pos[self.takeoff_mask, 0]
-        
-        pitch = torch.atan(delta_length / (4 * delta_height))
-        
-        # Calculate magnitude using height-based formula
-        # magnitude = sqrt(2*gravity*height / cos²(pitch))
-        magnitude = torch.sqrt(2 * gravity * delta_height / torch.cos(pitch)**2)
-        
-        vector = torch.zeros((pitch.shape[0], 3), device=pitch.device)
-        
-        vector[:, 0] = magnitude * torch.sin(pitch)  # x_dot (horizontal)
-        vector[:, 2] = magnitude * torch.cos(pitch)  # z_dot (vertical)
-        # y_dot remains zero (no lateral movement)
-                
-        self.dynamic_takeoff_vector[self.takeoff_mask] = vector
+        self.dynamic_takeoff_vector[env_ids] = convert_pitch_magnitude_to_vector(pitch, magnitude)
+        return self.dynamic_takeoff_vector[env_ids]
 
     def _abs_angle_error(self, quat: torch.Tensor) -> torch.Tensor:
         """
@@ -621,7 +581,7 @@ class FullJumpEnv(ManagerBasedRLEnv):
         angle = 2 * torch.acos(torch.clamp(w, min=-1.0, max=1.0))
         return torch.abs(angle)
     
-    def get_com_vel(self) -> torch.Tensor:
+    def get_com_vel(self: torch.Tensor) -> torch.Tensor:
         """
         Returns the center of mass linear velocity of the robot.
         Returns a tensor of shape (num_envs, 3)
@@ -863,7 +823,10 @@ class FullJumpEnv(ManagerBasedRLEnv):
         """Update the robot phase for the specified environments"""
         
         self.prev_jump_phase = self.jump_phase.clone()
-                    
+            
+        #vel_not_increasing = com_vel_magnitude < max_takeoff_vel_magnitude - 0.1 #add margin for numerical errors and small variations
+        com_height = self.com_pos[:, 2]
+        
         com_acc_z = self.com_acc[:, 2]
         gravity = -9.81
         gravity_condition = (com_acc_z < (gravity + 0.1))
@@ -884,41 +847,6 @@ class FullJumpEnv(ManagerBasedRLEnv):
         self.landing_mask = self.jump_phase == Phase.LANDING
         self.takeoff_to_flight_mask = (self.jump_phase == Phase.FLIGHT) & (self.prev_jump_phase == Phase.TAKEOFF)
         self.flight_to_landing_mask = (self.jump_phase == Phase.LANDING) & (self.prev_jump_phase == Phase.FLIGHT)
-
-        
-        
-        # com_acc_z = self.com_acc[:, 2]
-        # com_vel_z = self.com_vel[:, 2]
-        # #com_height = self.com_pos[:, 2]
-        # gravity = -9.81
-        
-        
-        # # Only print debug info every 10 steps
-        # if self.common_step_counter % 20 == 0:
-        #     print(f"acc z")
-        #     print(f"mean: {torch.mean(com_acc_z)}")
-        #     print(f"acc z min: {torch.min(com_acc_z)}")
-        #     print(f"acc z max: {torch.max(com_acc_z)}")
-            
-        #     print(f"com height")
-        #     print(f"mean: {torch.mean(self.com_pos[:, 2])}")
-        #     print(f"min: {torch.min(self.com_pos[:, 2])}")
-        #     print(f"max: {torch.max(self.com_pos[:, 2])}")
-            
-        #     print(f"com vel z")
-        #     print(f"mean: {torch.mean(self.com_vel[:, 2])}")
-        #     print(f"min: {torch.min(self.com_vel[:, 2])}")
-        #     print(f"max: {torch.max(self.com_vel[:, 2])}")
-            
-        # self.jump_phase[self.takeoff_mask & (com_acc_z < (gravity + 0.1))] = Phase.FLIGHT
-                  
-        # self.jump_phase[self.flight_mask & (com_acc_z > (gravity + 0.1)) & (com_vel_z < -0.2)] = Phase.LANDING
-                
-        # self.takeoff_mask = self.jump_phase == Phase.TAKEOFF
-        # self.flight_mask = self.jump_phase == Phase.FLIGHT
-        # self.landing_mask = self.jump_phase == Phase.LANDING
-        # self.takeoff_to_flight_mask = (self.jump_phase == Phase.FLIGHT) & (self.prev_jump_phase == Phase.TAKEOFF)
-        # self.flight_to_landing_mask = (self.jump_phase == Phase.LANDING) & (self.prev_jump_phase == Phase.FLIGHT)
 
     def log_phase_info(self):
         """Logs the distribution of phases to the extras dict."""

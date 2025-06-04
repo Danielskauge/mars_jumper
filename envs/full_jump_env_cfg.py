@@ -123,9 +123,6 @@ class RewardsCfg:
     #     weight=150.0, 
     # )
     
-    update_env_data = RewardTermCfg(func=rewards.update_env_data, weight=0.1)
-    update_jump_phase = RewardTermCfg(func=rewards.update_jump_phase, weight=0.1)
-
     rel_cmd_error_huber = RewardTermCfg(func=rewards.cmd_error,
                                         params={"kernel": rewards.Kernel.HUBER,
                                                 "delta": 0.05,
