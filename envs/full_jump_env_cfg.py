@@ -1,6 +1,5 @@
 import numpy as np
 from typing import Tuple
-from isaaclab.assets.rigid_object.rigid_object_cfg import RigidObjectCfg
 from isaaclab.managers.manager_term_cfg import CurriculumTermCfg
 import isaaclab.sim as sim_utils
 from isaaclab.assets import ArticulationCfg, AssetBaseCfg
@@ -10,7 +9,7 @@ from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sensors import ContactSensorCfg
 from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.utils import configclass
-from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
+from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise, AdditiveGaussianNoiseCfg as Gnoise
 from isaaclab.envs import mdp
 from isaaclab.envs.common import ViewerCfg
 from terms import rewards, events, curriculums, observations, terminations
@@ -25,8 +24,8 @@ EARTH_GRAVITY = 9.81
 @configclass
 class MetricsBucketingCfg:
     """Configuration for command bucketing and metric tracking."""
-    num_height_buckets: int = 1
-    num_length_buckets: int = 1
+    num_height_buckets: int = 3
+    num_length_buckets: int = 3
 
 @configclass
 class CommandRangesCfg:
@@ -34,10 +33,10 @@ class CommandRangesCfg:
     # Pitch 45deg from vertical is equivalent to H = 0.25L, which is the shallowest jump within the friction cone for a friction coefficient of 1. Thus <45deg might be optimal.
 
     min_target_length = 0.0  # m  
-    max_target_length = 0.5  # m
+    max_target_length = 0.4  # m
 
-    min_target_height = 0.2  # m
-    max_target_height = 0.5  # m
+    min_target_height = 0.25  # m
+    max_target_height = 0.4  # m
     
     height_range: Tuple[float, float] = (min_target_height, max_target_height)
     length_range: Tuple[float, float] = (min_target_length, max_target_length)
@@ -101,12 +100,43 @@ class CommandRangesCfg:
 class EventCfg:
     reset_scene_to_default = EventTermCfg(func=mdp.reset_scene_to_default, mode="reset")
     reset_robot_pose_with_feet_on_ground = EventTermCfg(func=events.reset_robot_pose_with_feet_on_ground, mode="reset", params={
-        "base_height_range": (0.08, 0.08), # Increased range from (0.05, 0.015) to allow deeper crouch
+        "base_height_range": (0.08, 0.08), #(0.08, 0.08)
         "base_pitch_range_rad": (15*DEG2RAD, 15*DEG2RAD), # Restored wider range for more variety
         "front_foot_x_offset_range_cm": (0, 0), # Restored some variation from (0, 0)
         "hind_foot_x_offset_range_cm": (0, 0), # Restored variation from (0, 0)
         "base_vertical_vel_range": (-0, 0),  # Range for sampling base vertical velocity in m/s
     })
+
+    # randomize_actuator_gains = EventTermCfg(
+    #     func=events.randomize_actuator_gains,
+    #     mode="reset",
+    #     params={
+    #         "asset_cfg": SceneEntityCfg("robot"),
+    #         "stiffness_distribution_params": (0.99, 1.01),
+    #         "damping_distribution_params": (0.99, 1.01),
+    #         "operation": "scale",
+    #         "distribution": "uniform",
+    #     },
+    # )
+    randomize_rigid_body_mass = EventTermCfg(
+        func=mdp.randomize_rigid_body_mass,
+        mode="reset",
+        params={
+            "asset_cfg": SceneEntityCfg("robot"),
+            "mass_distribution_params": (1, 1),
+            "operation": "scale",
+            "distribution": "uniform",
+            "recompute_inertia": True,
+        },
+    )
+    # randomize_spring_stiffness = EventTermCfg(
+    #     func=events.randomize_spring_stiffness,
+    #     mode="reset",
+    #     params={
+    #         "asset_cfg": SceneEntityCfg("robot"),
+    #         "spring_distribution_params": (0.8, 1.2),
+    #     },
+    # )
 
 @configclass
 class RewardsCfg:
@@ -127,14 +157,14 @@ class RewardsCfg:
                                         params={"kernel": rewards.Kernel.HUBER,
                                                 "delta": 0.05,
                                                 "e_max": 0.8},
-                                        weight=5.0,
+                                        weight=20.0,
     )
     
     relative_cmd_error_huber_flight_trans = RewardTermCfg(func=rewards.liftoff_relative_cmd_error,
         params={"kernel": rewards.Kernel.HUBER,
                 "delta": 0.05,
                 "e_max": 0.8},
-        weight=150.0,
+        weight=200.0,
     )
 
     attitude_descent = RewardTermCfg(func=rewards.attitude_descent, 
@@ -163,7 +193,8 @@ class RewardsCfg:
                                                                                                 # "thigh_contact_force",
                                                                                                 # "hip_contact_force",
                                                                                                  "bad_orientation_landing",
-                                                                                                "landing_walking"
+                                                                                                "landing_walking",
+                                                                                              #  "bad_flight_contact"
                                                                                                  ]})
 
     contact_forces = RewardTermCfg(func=rewards.contact_forces,
@@ -173,12 +204,18 @@ class RewardsCfg:
                                            "delta": 1,
                                            "e_max": 20,
                                            "phases": [Phase.TAKEOFF, Phase.FLIGHT, Phase.LANDING]})
-    
+
     action_rate_l2 = RewardTermCfg(func=mdp.action_rate_l2,
-                                   weight=-0.0001)
+                                   weight=-0.1)
     
     dof_pos_limits = RewardTermCfg(func=mdp.joint_pos_limits, 
                                    weight=-0.1)
+    
+    
+    joint_torques_threshold_linear = RewardTermCfg(func=rewards.joint_torques_threshold_linear,
+                                                   params={"threshold": 1,
+                                                           "phases": [Phase.FLIGHT, Phase.LANDING]},
+                                                   weight=-0.1)
     
     # landing_contact_forces = RewardTermCfg(func=rewards.contact_forces,
     #                                        params={
@@ -294,9 +331,6 @@ class RewardsCfg:
             
 
     
-    # joint_torques_l2 = RewardTermCfg(func=mdp.joint_torques_l2,
-    #                                   weight=-0.0001)
-    
     # foot_contact_stability = RewardTermCfg(func=rewards.foot_contact_state_change_penalty,
     #                                          weight=-0.05, # Negative weight as the function returns a penalty
     #                                          params={"phases": [Phase.LANDING, Phase.TAKEOFF]} # Example phases
@@ -330,6 +364,8 @@ class TerminationsCfg:
         "phases": [Phase.LANDING]
     })
     landing_walking = TerminationTermCfg(func=terminations.landing_walking, params={"x_tolerance": 0.15, "y_tolerance": 0.15})
+    
+    # bad_flight_contact = TerminationTermCfg(func=terminations.bad_flight_contact, params={"threshold": 0.5})
         
     # base_contact_force = TerminationTermCfg(func=terminations.illegal_contact, 
     #                                      params={"body": "base", "threshold": 100})
@@ -359,23 +395,35 @@ class ObservationsCfg:
     @configclass
     class PolicyCfg(ObservationGroupCfg):
         # Standard observations (no latency)
-        base_height = ObservationTermCfg(func=mdp.base_pos_z, noise=Unoise(n_min=-0.05, n_max=0.05))
-        base_lin_vel = ObservationTermCfg(func=mdp.base_lin_vel, noise=Unoise(n_min=-0.05, n_max=0.05))
-        base_ang_vel = ObservationTermCfg(func=mdp.base_ang_vel, noise=Unoise(n_min=-0.05, n_max=0.05))
-        base_rotation_vector = ObservationTermCfg(func=observations.base_rotation_vector)
-        joint_pos = ObservationTermCfg(func=mdp.joint_pos_rel, noise=Unoise(n_min=-0.01, n_max=0.01))
-        joint_vel = ObservationTermCfg(func=mdp.joint_vel_rel, noise=Unoise(n_min=-1.5, n_max=1.5))
+        # base_height = ObservationTermCfg(func=mdp.base_pos_z, noise=Unoise(n_min=-0.05, n_max=0.05))
+        # base_lin_vel = ObservationTermCfg(func=mdp.base_lin_vel, noise=Unoise(n_min=-0.05, n_max=0.05))
+        base_ang_vel = ObservationTermCfg(func=mdp.base_ang_vel, noise=Gnoise(mean=0.0, std=0.01))
+        #base_rotation_vector = ObservationTermCfg(func=observations.base_rotation_vector)
+        joint_pos = ObservationTermCfg(func=mdp.joint_pos_rel, noise=Gnoise(mean=0.0, std=0.01))
+        joint_vel = ObservationTermCfg(func=mdp.joint_vel_rel, noise=Gnoise(mean=0.0, std=0.05))
         previous_actions = ObservationTermCfg(func=mdp.last_action)        
         has_taken_off = ObservationTermCfg(func=observations.has_taken_off)
-        command_vec = ObservationTermCfg(func=observations.takeoff_height_length_cmd, noise=Unoise(n_min=-0.01, n_max=0.01))
+        command_vec = ObservationTermCfg(func=observations.takeoff_height_length_cmd)
 
         # Example of base height observation with latency (uncomment and modify latency_ms as needed)
-        # base_height_delayed = ObservationTermCfg(func=observations.base_pos_z_with_latency, 
+        base_height_delayed = ObservationTermCfg(func=observations.base_pos_z_with_latency, 
+                                                params={"latency_ms": 50.0},  # 50ms latency
+                                                noise=Gnoise(mean=0.0, std=0.01))
+        
+        base_rot_vec_delayed = ObservationTermCfg(func=observations.base_rot_vec_with_latency, 
+                                                params={"latency_ms": 50.0},  # 50ms latency
+                                                noise=Gnoise(mean=0.0, std=0.01))
+        
+        base_lin_vel_delayed = ObservationTermCfg(func=observations.base_lin_vel_with_latency, 
+                                                params={"latency_ms": 50.0},  # 50ms latency
+                                                noise=Gnoise(mean=0.0, std=0.05))
+        
+        # base_ang_vel_delayed = ObservationTermCfg(func=observations.base_ang_vel_with_latency, 
         #                                         params={"latency_ms": 50.0},  # 50ms latency
         #                                         noise=Unoise(n_min=-0.05, n_max=0.05))
 
         def __post_init__(self):
-            self.enable_corruption = False 
+            self.enable_corruption = True 
             self.concatenate_terms = True 
 
     policy: PolicyCfg = PolicyCfg()
@@ -409,52 +457,28 @@ class MySceneCfg(InteractiveSceneCfg):
         ),
     )    
 
-@configclass
-class CurriculumCfg:
-    command_range_progression = CurriculumTermCfg(
-        func=curriculums.progress_command_ranges,
-        params={
-            "num_curriculum_levels": 50,
-            "success_rate_threshold": 0.9,
-            "min_steps_between_updates": 150,
-            "enable_regression": False,
-        },
-    )
+# @configclass
+# class CurriculumCfg:
+#     # command_range_progression = CurriculumTermCfg(
+#     #     func=curriculums.progress_command_ranges,
+#     #     params={
+#     #         "num_curriculum_levels": 50,
+#     #         "success_rate_threshold": 0.9,
+#     #         "min_steps_between_updates": 150,
+#     #         "enable_regression": False,
+#     #     },
+#     # )
     
-    reward_weight_progression = CurriculumTermCfg(
-        func=curriculums.progress_reward_weights_by_metric,
-        params={
-            "metric_name": "full_jump_success_rate",
-            "reward_weight_configs": {
-                "attitude_landing": {
-                    "initial_weight": 0.1,
-                    "target_weight": 0.5,
-                    "metric_threshold": 0.8,
-                    "metric_start": 0.2,
-                },
-                "attitude_landing_trans": {
-                    "initial_weight": 30.0,
-                    "target_weight": 100.0,
-                    "metric_threshold": 0.8,
-                    "metric_start": 0.2,
-                },
-                "feet_height": {
-                    "initial_weight": 0.1,
-                    "target_weight": 1.0,
-                    "metric_threshold": 0.9,
-                    "metric_start": 0.3,
-                },
-                "landing_base_height": {
-                    "initial_weight": 0.05,
-                    "target_weight": 0.3,
-                    "metric_threshold": 0.9,
-                    "metric_start": 0.3,
-                },
-            },
-            "min_steps_between_updates": 200,
-            "smoothing_factor": 0.05,
-        },
-    )
+#     simple_contact_enable = CurriculumTermCfg(
+#         func=curriculums.enable_reward_on_error_threshold,
+#         params={
+#             "metric_name": "takeoff_relative_error",
+#             "reward_name": "contact_forces",
+#             "initial_weight": 0.01,
+#             "target_weight": 0.2,
+#             "error_threshold": 0.2,
+#         },
+#     )
 
 
 @configclass
@@ -480,7 +504,7 @@ class FullJumpEnvCfg(ManagerBasedRLEnvCfg):
         self.flight_angle_error_threshold = 15*DEG2RAD
                 
         self.real_time_control_dt = 1/120
-        self.sim.dt = 1/360 #Physics time step, also the torque update rate
+        self.sim.dt = 1/600 #Physics time step, also the torque update rate
         self.episode_length_s = MAX_EPISODE_LENGTH_S
         self.viewer = ViewerCfg(
             eye=[-0.02, 0.55, -0.03],

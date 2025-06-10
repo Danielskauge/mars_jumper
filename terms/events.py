@@ -1,4 +1,3 @@
-
 """Custom event functions for the Mars Jumper environment."""
 
 from __future__ import annotations
@@ -320,5 +319,61 @@ def reset_robot_pose_with_feet_on_ground(env: ManagerBasedRLEnv,
     env.robot.write_root_state_to_sim(root_state, env_ids=env_ids) 
     env.robot.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids)
 
+def randomize_actuator_gains(env, env_ids, asset_cfg,
+                             stiffness_distribution_params=None,
+                             damping_distribution_params=None,
+                             operation="scale",
+                             distribution="uniform"):
+    """Randomize actuator PD gains by sampling one scale factor per actuator per env."""
+    from isaaclab.assets import Articulation
+    from isaaclab.actuators import ImplicitActuator
+    asset: Articulation = env.scene[asset_cfg.name]
+    # prepare environment ids tensor
+    if env_ids is None:
+        env_ids_tensor = torch.arange(env.num_envs, device=asset.device)
+    else:
+        env_ids_tensor = torch.tensor(env_ids, dtype=torch.long, device=asset.device) if not torch.is_tensor(env_ids) else env_ids.to(asset.device)
+    # loop through each actuator
+    for actuator in asset.actuators.values():
+        # determine joint indices for this actuator
+        if isinstance(actuator.joint_indices, slice):
+            idx = slice(None)
+        else:
+            idx = torch.tensor(actuator.joint_indices, device=asset.device)
+        # randomize stiffness
+        if stiffness_distribution_params is not None:
+            low, high = stiffness_distribution_params
+            factors = math_utils.sample_uniform(low, high, (len(env_ids_tensor), 1), device=asset.device)
+            stiff = actuator.stiffness[env_ids_tensor].clone()
+            stiff[:, idx] = asset.data.default_joint_stiffness[env_ids_tensor][:, idx]
+            stiff[:, idx] *= factors
+            actuator.stiffness[env_ids_tensor] = stiff
+            if isinstance(actuator, ImplicitActuator):
+                asset.write_joint_stiffness_to_sim(stiff, joint_ids=actuator.joint_indices, env_ids=env_ids_tensor)
+        # randomize damping
+        if damping_distribution_params is not None:
+            low, high = damping_distribution_params
+            factors = math_utils.sample_uniform(low, high, (len(env_ids_tensor), 1), device=asset.device)
+            damp = actuator.damping[env_ids_tensor].clone()
+            damp[:, idx] = asset.data.default_joint_damping[env_ids_tensor][:, idx]
+            damp[:, idx] *= factors
+            actuator.damping[env_ids_tensor] = damp
+            if isinstance(actuator, ImplicitActuator):
+                asset.write_joint_damping_to_sim(damp, joint_ids=actuator.joint_indices, env_ids=env_ids_tensor)
+    
+def randomize_spring_stiffness(
+    env, env_ids, asset_cfg,
+    spring_distribution_params: tuple[float, float] = (0.8, 1.2)
+) -> None:
+    """Randomize spring stiffness for parallel elastic knee actuators."""
+    from robot.actuators.actuators import ParallelElasticActuator
+    asset = env.scene[asset_cfg.name]
+    # sample one factor
+    low, high = spring_distribution_params
+    factor = float(math_utils.sample_uniform(low, high, (1,), device='cpu').item())
+    # apply to each parallel elastic actuator
+    for actuator in asset.actuators.values():
+        if isinstance(actuator, ParallelElasticActuator):
+            actuator.cfg.spring_stiffness *= factor
     
     

@@ -134,3 +134,123 @@ def base_pos_z_with_latency(
     env._base_height_buffer_write_index += 1
 
     return delayed_obs
+
+def base_rot_vec_with_latency(
+    env: ManagerBasedEnv,
+    latency_ms: float = 0.0,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+) -> torch.Tensor:
+    """Root rotation vector in the simulation world frame with configurable latency."""
+    asset: Articulation = env.scene[asset_cfg.name]
+    # Compute current rotation vector
+    quat = asset.data.root_quat_w
+    quat = math_utils.quat_unique(quat)
+    w, x, y, z = quat[:, 0], quat[:, 1], quat[:, 2], quat[:, 3]
+    angle = 2 * torch.acos(torch.clamp(w, min=-1.0, max=1.0))
+    sin_angle_2 = torch.sin(angle / 2)
+    mask = sin_angle_2 != 0
+    rot_vec = torch.zeros_like(quat[:, 1:])
+    rot_vec[mask] = angle[mask].unsqueeze(-1) * torch.stack([x[mask], y[mask], z[mask]], dim=-1) / (sin_angle_2[mask].unsqueeze(-1))
+    current_obs = rot_vec
+
+    if latency_ms <= 0:
+        return current_obs
+
+    latency_steps = int(latency_ms / 1000.0 / env.step_dt)
+    buffer_size = latency_steps + 1
+
+    if not hasattr(env, '_base_rot_vec_latency_buffer') or env._base_rot_vec_latency_buffer.shape[0] != buffer_size:
+        env._base_rot_vec_latency_buffer = torch.zeros(
+            (buffer_size, env.num_envs, current_obs.shape[-1]),
+            device=env.device,
+            dtype=current_obs.dtype
+        )
+        env._base_rot_vec_buffer_write_index = 0
+
+    buf = env._base_rot_vec_latency_buffer
+    write_idx = env._base_rot_vec_buffer_write_index % buffer_size
+    buf[write_idx] = current_obs
+
+    if env._base_rot_vec_buffer_write_index >= latency_steps:
+        read_idx = (write_idx - latency_steps) % buffer_size
+        delayed_obs = buf[read_idx]
+    else:
+        delayed_obs = current_obs
+
+    env._base_rot_vec_buffer_write_index += 1
+
+    return delayed_obs
+
+def base_ang_vel_with_latency(
+    env: ManagerBasedEnv,
+    latency_ms: float = 0.0,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+) -> torch.Tensor:
+    """Root angular velocity in the asset's root frame with configurable latency."""
+    asset: Articulation = env.scene[asset_cfg.name]
+    current_obs = asset.data.root_ang_vel_b
+
+    if latency_ms <= 0:
+        return current_obs
+
+    latency_steps = int(latency_ms / 1000.0 / env.step_dt)
+    buffer_size = latency_steps + 1
+
+    if not hasattr(env, '_base_ang_vel_latency_buffer') or env._base_ang_vel_latency_buffer.shape[0] != buffer_size:
+        env._base_ang_vel_latency_buffer = torch.zeros(
+            (buffer_size, env.num_envs, current_obs.shape[-1]),
+            device=env.device,
+            dtype=current_obs.dtype
+        )
+        env._base_ang_vel_buffer_write_index = 0
+
+    buf = env._base_ang_vel_latency_buffer
+    write_idx = env._base_ang_vel_buffer_write_index % buffer_size
+    buf[write_idx] = current_obs
+
+    if env._base_ang_vel_buffer_write_index >= latency_steps:
+        read_idx = (write_idx - latency_steps) % buffer_size
+        delayed_obs = buf[read_idx]
+    else:
+        delayed_obs = current_obs
+
+    env._base_ang_vel_buffer_write_index += 1
+
+    return delayed_obs
+
+def base_lin_vel_with_latency(
+    env: ManagerBasedEnv,
+    latency_ms: float = 0.0,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+) -> torch.Tensor:
+    """Root linear velocity in the asset's root frame with configurable latency."""
+    asset: Articulation = env.scene[asset_cfg.name]
+    current_obs = asset.data.root_lin_vel_b
+
+    if latency_ms <= 0:
+        return current_obs
+
+    latency_steps = int(latency_ms / 1000.0 / env.step_dt)
+    buffer_size = latency_steps + 1
+
+    if not hasattr(env, '_base_lin_vel_latency_buffer') or env._base_lin_vel_latency_buffer.shape[0] != buffer_size:
+        env._base_lin_vel_latency_buffer = torch.zeros(
+            (buffer_size, env.num_envs, current_obs.shape[-1]),
+            device=env.device,
+            dtype=current_obs.dtype
+        )
+        env._base_lin_vel_buffer_write_index = 0
+
+    buf = env._base_lin_vel_latency_buffer
+    write_idx = env._base_lin_vel_buffer_write_index % buffer_size
+    buf[write_idx] = current_obs
+
+    if env._base_lin_vel_buffer_write_index >= latency_steps:
+        read_idx = (write_idx - latency_steps) % buffer_size
+        delayed_obs = buf[read_idx]
+    else:
+        delayed_obs = current_obs
+
+    env._base_lin_vel_buffer_write_index += 1
+
+    return delayed_obs

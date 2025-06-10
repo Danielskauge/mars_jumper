@@ -1,0 +1,61 @@
+<?xml version="1.0"?>
+<robot name="simple_1dof_robot">
+
+  <!-- Base Link (Fixed) -->
+  <link name="base_link">
+    <visual>
+      <origin xyz="0 0 0.05" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.1 0.1 0.1"/>
+      </geometry>
+      <material name="grey">
+        <color rgba="0.5 0.5 0.5 1"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0.05" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.1 0.1 0.1"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <mass value="0.01"/> <!-- Minimal mass for static link -->
+      <inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.001"/>
+    </inertial>
+  </link>
+
+  <!-- Link 1 (Moving Link) -->
+  <link name="link1">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <sphere radius="1.0"/>
+      </geometry>
+      <material name="blue">
+        <color rgba="0.1 0.1 0.8 1"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <sphere radius="1.0"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="5.0"/>
+      <inertia ixx="0.007" ixy="0" ixz="0" iyy="0.007" iyz="0" izz="0.007"/>
+    </inertial>
+  </link>
+
+  <!-- Joint 1 (Revolute) -->
+  <joint name="joint1" type="revolute">
+    <parent link="base_link"/>
+    <child link="link1"/>
+    <origin xyz="0 0 0.1" rpy="0 0 0"/> <!-- Joint located 0.1m up from base_link origin -->
+    <axis xyz="0 1 0"/> <!-- Revolute around Y-axis -->
+    <limit lower="-3.14159" upper="3.14159" effort="10.0" velocity="100.0"/>
+    <dynamics damping="1.0" friction="0.0"/>
+  </joint>
+
+</robot> 

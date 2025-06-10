@@ -70,6 +70,7 @@ class FullJumpEnv(ManagerBasedRLEnv):
         self.dynamic_takeoff_vector = torch.zeros(self.num_envs, 3, device=self.device) #Will be updated while env is in takeoff phase, then hold its last value until reset
         #for curriculum
         self.mean_episode_env_steps = 0
+        self.steps_since_curriculum_update = 0
         
         # Phase-specific reward accumulators
         self.takeoff_reward_sum = torch.zeros(self.num_envs, device=self.device)
@@ -182,6 +183,31 @@ class FullJumpEnv(ManagerBasedRLEnv):
         self.extras["log"]["takeoff_contact_forces"] = current_sum_contact_forces[self.takeoff_mask].mean().item() if torch.any(self.takeoff_mask) else float('nan')
         self.extras["log"]["flight_contact_forces"] = current_sum_contact_forces[self.flight_mask].mean().item() if torch.any(self.flight_mask) else float('nan')
         self.extras["log"]["landing_contact_forces"] = current_sum_contact_forces[self.landing_mask].mean().item() if torch.any(self.landing_mask) else float('nan')
+        
+        # Compute per-category contact forces
+        all_net_forces = self.contact_sensor.data.net_forces_w
+        # Base
+        base_forces = all_net_forces[:, self.base_body_idx, :]
+        base_force_mag = torch.norm(base_forces, dim=-1)
+        # Hips
+        hips_forces = all_net_forces[:, self.hips_body_idx, :]
+        hips_force_mag = torch.norm(hips_forces, dim=-1)
+        # Thighs
+        thighs_forces = all_net_forces[:, self.thighs_body_idx, :]
+        thighs_force_mag = torch.norm(thighs_forces, dim=-1)
+        # Shanks
+        shanks_forces = all_net_forces[:, self.shanks_body_idx, :]
+        shanks_force_mag = torch.norm(shanks_forces, dim=-1)
+        # Feet
+        feet_forces = all_net_forces[:, self.feet_body_idx, :]
+        feet_force_mag = torch.norm(feet_forces, dim=-1)
+        # Log per-phase per-group
+        for phase_mask, phase_name in [(self.takeoff_mask, "takeoff"), (self.flight_mask, "flight"), (self.landing_mask, "landing")]:
+            self.extras["log"][f"{phase_name}_base_contact_forces"] = base_force_mag[phase_mask].mean().item() if torch.any(phase_mask) else float('nan')
+            self.extras["log"][f"{phase_name}_hips_contact_forces"] = hips_force_mag[phase_mask].mean().item() if torch.any(phase_mask) else float('nan')
+            self.extras["log"][f"{phase_name}_thighs_contact_forces"] = thighs_force_mag[phase_mask].mean().item() if torch.any(phase_mask) else float('nan')
+            self.extras["log"][f"{phase_name}_shanks_contact_forces"] = shanks_force_mag[phase_mask].mean().item() if torch.any(phase_mask) else float('nan')
+            self.extras["log"][f"{phase_name}_feet_contact_forces"] = feet_force_mag[phase_mask].mean().item() if torch.any(phase_mask) else float('nan')
         
         if torch.any(self.flight_mask):
             flight_quat = self.robot.data.root_quat_w[self.flight_mask]
@@ -824,23 +850,23 @@ class FullJumpEnv(ManagerBasedRLEnv):
         
         self.prev_jump_phase = self.jump_phase.clone()
             
-        #vel_not_increasing = com_vel_magnitude < max_takeoff_vel_magnitude - 0.1 #add margin for numerical errors and small variations
-        com_height = self.com_pos[:, 2]
-        
         com_acc_z = self.com_acc[:, 2]
+        com_vel_z = self.com_vel[:, 2]
+        
         gravity = -9.81
         gravity_condition = (com_acc_z < (gravity + 0.1))
         
-        self.jump_phase[self.takeoff_mask & gravity_condition] = Phase.FLIGHT
+        # min_height_gain = 0.05
+        # min_vel_z = np.sqrt(2 * min_height_gain * gravity)
+        vel_condition = (com_vel_z > 0.5)
         
-        falling = self.com_vel[:, 2] < -0.1  
+        self.jump_phase[self.takeoff_mask & gravity_condition & vel_condition] = Phase.FLIGHT
         
-        all_body_except_feet_heights_w = self.robot.data.body_pos_w[:, self.bodies_except_feet_idx, 2]
-        any_body_except_feet_too_low = torch.any(all_body_except_feet_heights_w < 0.1, dim=-1)
-        feet_heights_w = self.robot.data.body_pos_w[:, self.feet_body_idx, 2]
-        any_feet_too_low = torch.any(feet_heights_w < 0.04, dim=-1)
+        gravity_condition = (com_acc_z > (gravity + 0.1))
+        
+        descending_condition = (com_vel_z < 0.0)
 
-        self.jump_phase[self.flight_mask & falling & (any_body_except_feet_too_low | any_feet_too_low)] = Phase.LANDING
+        self.jump_phase[self.flight_mask & gravity_condition & descending_condition] = Phase.LANDING #TODO: add a condition to check if the robot is descending at a reasonable speed
         
         self.takeoff_mask = self.jump_phase == Phase.TAKEOFF
         self.flight_mask = self.jump_phase == Phase.FLIGHT
@@ -858,7 +884,7 @@ class FullJumpEnv(ManagerBasedRLEnv):
             
             # Calculate count and percentage
             phase_mask = (self.jump_phase == phase_val)
-            count = torch.sum(phase_mask).item()  # Single value transfer
+            count = torch.sum(phase_mask).item()  # Single value transfer 
             phase_log[f"phase_dist/{phase_name}"] = count / self.num_envs
                 
         self.extras["log"].update(phase_log)

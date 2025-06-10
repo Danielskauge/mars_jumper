@@ -1004,8 +1004,8 @@ def main():
                 # Retrieve target joint positions (these are the scaled actions for ImplicitActuator)
                 target_positions = env.unwrapped.robot.data.joint_pos_target.clone().squeeze(0)
                 episode_target_positions.append(target_positions)
-                current_com_vel = env.unwrapped.center_of_mass_lin_vel.squeeze(0) # Squeeze batch dim
-                current_com_accel = env.unwrapped.center_of_mass_lin_accel.squeeze(0) # Squeeze batch dim
+                current_com_vel = env.unwrapped.com_vel.squeeze(0) # Squeeze batch dim
+                current_com_accel = env.unwrapped.com_acc.squeeze(0) # Squeeze batch dim
                 
                 current_base_height = env.unwrapped.robot.data.root_pos_w[:, 2].squeeze(0) # Squeeze batch dim
                 current_base_x_pos = env.unwrapped.robot.data.root_pos_w[:, 0].squeeze(0)  # Squeeze batch dim
@@ -1025,7 +1025,7 @@ def main():
                 episode_any_feet_on_ground.append(any_feet.clone()) # Store any feet status
                 
                 # Calculate and store dynamic pitch and magnitude directly
-                current_com_pos_for_dyn_calc = env.unwrapped.center_of_mass_pos # Shape: (1, 3) for single env
+                current_com_pos_for_dyn_calc = env.unwrapped.com_pos # Shape: (1, 3) for single env
                 # Assuming env.unwrapped.target_height and env.unwrapped.target_length are (1,)
                 dynamic_pitch_tensor, dynamic_magnitude_tensor = convert_height_length_to_pitch_magnitude_from_position(
                     env.unwrapped.target_height, # Should be (1,)

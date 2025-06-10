@@ -265,5 +265,16 @@ def entered_flight(
     """Terminate when the robot enters the flight phase."""
     return env.jump_phase == Phase.FLIGHT
 
+def bad_flight_contact(
+    env: ManagerBasedRLEnv,
+    threshold: float = 1.0,
+) -> torch.Tensor:
+    """Terminate when in flight and COM vertical acceleration magnitude exceeds gravity + threshold while ascending."""
+    # Get gravity magnitude from config
+    g = -9.81
+    acc_z = env.com_acc[:, 2]
+    vel_z = env.com_vel[:, 2]
+    return (env.jump_phase == Phase.FLIGHT) & (vel_z > 0) & (torch.abs(acc_z) > (g + threshold))
+
 
     

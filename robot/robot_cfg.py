@@ -3,7 +3,7 @@ import numpy as np
 import torch
 from typing import Tuple, List
 
-from isaaclab.actuators.actuator_cfg import ImplicitActuatorCfg, ActuatorNetLSTMCfg, IdealPDActuatorCfg
+from robot.actuators.actuators import TorqueSpeedServoCfg, ParallelElasticActuatorCfg
 #from robot.actuators.gru_actuator_cfg import CombinedGRUAndPDActuatorCfg
 import isaaclab.sim as sim_utils
 from isaaclab.assets.articulation import ArticulationCfg
@@ -64,42 +64,31 @@ class MarsJumperRobotCfg(ArticulationCfg):
         # stiffness = 20 #Nm/rad (not sure if that's correct)
         # damping = 0.2 #Nm/rad/s #original 0.05
         
-        #new more realistic
-        stall_torque = 2 #Nm
-        stiffness = 10 #Nm/rad (not sure if that's correct)
-        damping = 0.2 #Nm/rad/s #original 0.05
 
         actuators = {
-            "motors": ImplicitActuatorCfg(
-                joint_names_expr=[".*HAA", ".*HFE", ".*KFE"],
-                stiffness=stiffness,
-                damping=damping,
-                effort_limit=stall_torque,
-                
+            "knee_actuators": ParallelElasticActuatorCfg(
+                joint_names_expr=[".*KFE"],
+                stiffness=35, #original 35
+                damping=0.05,
+                effort_limit=1.82,
+                velocity_limit=36,
+                spring_stiffness=0.315, #0.315
+            ),
+            "hip_actuators": TorqueSpeedServoCfg(
+                joint_names_expr=[".*HFE"],
+                stiffness=35, #orignal 35
+                damping=0.05, 
+                effort_limit=1.82,
+                velocity_limit=36,
+            ),
+            "abductor_actuators": TorqueSpeedServoCfg(
+                joint_names_expr=[".*HAA"],
+                stiffness=21, #original 21
+                damping=0.073,
+                effort_limit=1.12,
+                velocity_limit=15.4,
             ),
         }
-        
-        explicit_actuators = {
-            "motors": IdealPDActuatorCfg(
-                joint_names_expr=[".*HAA", ".*HFE", ".*KFE"],
-                stiffness=10,
-                damping=0.2,
-                effort_limit=2,
-            ),
-        }
-            
-        # ANYDRIVE_3_LSTM_ACTUATOR_CFG = CombinedGRUAndPDActuatorCfg(
-        #     joint_names_expr=[".*HAA", ".*HFE", ".*KFE"],
-        #     network_file=f"{ISAACLAB_NUCLEUS_DIR}/ActuatorNets/ANYbotics/anydrive_3_lstm_jit.pt",
-        #     gru_num_layers=2,
-        #     gru_hidden_dim=128,
-        #     gru_sequence_length=2,
-        #     nn_weight=1.0,
-        #     apply_pd_control=True,
-        #     apply_pd_torque_speed_curve=True,
-        #     pd_stall_torque=2.0,
-        #     pd_no_load_speed=7.5,
-        # )
         
         spawn=sim_utils.UsdFileCfg(
                 usd_path=f"{os.getcwd()}/USD_files/moved_motor_usd_limits/moved_motor_usd_limits.usd",

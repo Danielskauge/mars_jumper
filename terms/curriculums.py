@@ -158,7 +158,132 @@ def progress_reward_weights_by_metric(
         "metric_value": current_metric,
         "reward_weights": {name: env.reward_manager.get_term_cfg(name).weight 
                           for name in reward_weight_configs.keys() 
-                          if name in env.reward_manager._terms}
+                          if name in env.reward_manager.active_terms}
+    }
+
+
+def progress_reward_weights_by_error_metric(
+    env: ManagerBasedRLEnv,
+    env_ids: Sequence[int],
+    metric_name: str = "takeoff_relative_error",
+    reward_weight_configs: Dict[str, Dict[str, Any]] = None,
+    min_steps_between_updates: int = 100,
+    smoothing_factor: float = 0.1,
+) -> None:
+    """Gradually increase reward weights based on an error metric (where lower values indicate better performance).
+    
+    Args:
+        env: The environment instance
+        env_ids: Not used since all environments are affected
+        metric_name: Name of the error metric attribute to track (e.g., "takeoff_relative_error")
+        reward_weight_configs: Dict mapping reward term names to their config:
+            {
+                "reward_term_name": {
+                    "initial_weight": float,    # Starting weight (when error is high)
+                    "target_weight": float,     # Final weight (when error is low)
+                    "error_threshold": float,   # Error value at which target_weight is reached (low error)
+                    "error_start": float,       # Error value at which progression starts (high error)
+                }
+            }
+        min_steps_between_updates: Minimum steps between weight updates
+        smoothing_factor: How much to adjust weights per update (0-1)
+    """
+    
+    # Initialize tracking attributes
+    if not hasattr(env, "error_weight_steps_since_update"):
+        env.error_weight_steps_since_update = 0
+    if not hasattr(env, "error_weight_initial_weights"):
+        env.error_weight_initial_weights = {}
+        
+    # Default configuration if none provided
+    if reward_weight_configs is None:
+        reward_weight_configs = {
+            "contact_forces": {
+                "initial_weight": 0.01,
+                "target_weight": 0.05,
+                "error_threshold": 0.1,
+                "error_start": 0.5,
+            },
+        }
+    
+    env.error_weight_steps_since_update += 1
+    
+    # Only update weights periodically
+    if env.error_weight_steps_since_update < min_steps_between_updates:
+        return
+        
+    env.error_weight_steps_since_update = 0
+    
+    # Get current metric value from extras log if available, otherwise from env attribute
+    current_metric = env.extras.get("log", {}).get(metric_name, float('nan'))
+    if torch.isnan(torch.tensor(current_metric)) or current_metric == float('nan'):
+        current_metric = getattr(env, metric_name, float('nan'))
+    
+    # Skip update if metric is not available
+    if torch.isnan(torch.tensor(current_metric)) or current_metric == float('nan'):
+        logger.debug(f"Skipping curriculum update - metric '{metric_name}' not available")
+        return
+    
+    # Update weights for each configured reward term
+    for reward_name, config in reward_weight_configs.items():
+        try:
+            # Get configuration values
+            initial_weight = config["initial_weight"]
+            target_weight = config["target_weight"]
+            error_threshold = config["error_threshold"]
+            error_start = config.get("error_start", 1.0)
+            
+            # Store initial weight if not already stored
+            if reward_name not in env.error_weight_initial_weights:
+                try:
+                    current_term_cfg = env.reward_manager.get_term_cfg(reward_name)
+                    env.error_weight_initial_weights[reward_name] = current_term_cfg.weight
+                except:
+                    env.error_weight_initial_weights[reward_name] = initial_weight
+                    logger.warning(f"Could not get initial weight for {reward_name}, using configured initial_weight")
+            
+            # Calculate progress ratio (inverted for error metrics)
+            # When error is high (>= error_start), progress_ratio = 0.0 (use initial_weight)
+            # When error is low (<= error_threshold), progress_ratio = 1.0 (use target_weight)
+            if current_metric >= error_start:
+                progress_ratio = 0.0
+            elif current_metric <= error_threshold:
+                progress_ratio = 1.0
+            else:
+                # Linear interpolation between error_start and error_threshold
+                progress_ratio = (error_start - current_metric) / (error_start - error_threshold)
+            
+            # Calculate target weight based on progress
+            new_weight = initial_weight + progress_ratio * (target_weight - initial_weight)
+            
+            # Get current weight and apply smoothing
+            try:
+                current_term_cfg = env.reward_manager.get_term_cfg(reward_name)
+                current_weight = current_term_cfg.weight
+                
+                # Smooth the weight update
+                smoothed_weight = current_weight + smoothing_factor * (new_weight - current_weight)
+                
+                # Update the weight
+                current_term_cfg.weight = smoothed_weight
+                env.reward_manager.set_term_cfg(reward_name, current_term_cfg)
+                
+                logger.debug(f"Updated {reward_name} weight: {current_weight:.4f} -> {smoothed_weight:.4f} "
+                           f"(target: {new_weight:.4f}, error: {current_metric:.3f})")
+                           
+            except Exception as e:
+                logger.warning(f"Failed to update weight for reward term '{reward_name}': {e}")
+                
+        except KeyError as e:
+            logger.warning(f"Missing configuration key for reward term '{reward_name}': {e}")
+        except Exception as e:
+            logger.warning(f"Error processing reward term '{reward_name}': {e}")
+    
+    return {
+        "metric_value": current_metric,
+        "reward_weights": {name: env.reward_manager.get_term_cfg(name).weight 
+                          for name in reward_weight_configs.keys() 
+                          if name in env.reward_manager.active_terms}
     }
 
 
@@ -246,4 +371,47 @@ def progress_command_ranges(
     
     # Might change success based on reward later
     #mag_reward = env.reward_manager.episode_sums.get("takeoff_vel_vec_magnitude", torch.zeros(len(env_ids), device=env.device))
+    
+
+def enable_reward_on_error_threshold(
+    env: ManagerBasedRLEnv,
+    env_ids: Sequence[int],
+    metric_name: str,
+    reward_name: str,
+    initial_weight: float,
+    target_weight: float,
+    error_threshold: float,
+) -> Dict[str, float]:
+    """Step reward weight from initial to target when error metric dips below a threshold."""
+    # Initialize enabled set
+    if not hasattr(env, "enabled_rewards"):
+        env.enabled_rewards = set()
+    # Get current metric
+    raw_metric = getattr(env, metric_name, None)
+    if raw_metric is None:
+        return {}
+    if isinstance(raw_metric, torch.Tensor):
+        if raw_metric.numel() == 0:
+            return {}
+        current_metric = raw_metric.mean().item()
+    else:
+        current_metric = float(raw_metric)
+    # Get term config
+    try:
+        term_cfg = env.reward_manager.get_term_cfg(reward_name)
+    except ValueError:
+        logger.warning(f"Reward term '{reward_name}' not found")
+        return {}
+    # Set weight based on threshold, only once
+    if reward_name not in env.enabled_rewards:
+        if current_metric <= error_threshold:
+            new_weight = target_weight
+            env.enabled_rewards.add(reward_name)
+        else:
+            new_weight = initial_weight
+        term_cfg.weight = new_weight
+        env.reward_manager.set_term_cfg(reward_name, term_cfg)
+    # Log current weight
+    current_weight = env.reward_manager.get_term_cfg(reward_name).weight
+    return {f"curriculum/{reward_name}_weight": current_weight}
     

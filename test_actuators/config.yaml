@@ -7,28 +7,37 @@ wandb:
   active: true
   project: actuator_modeling_gru_v2
   entity: ''
-  name_suffix: debug
+  name_suffix: pure_gru_loss_diff_max_vel
   group_suffix: initial_tests
   watch_log_freq: 100
 data:
   _target_: src.data.datamodule.ActuatorDataModule
-  data_base_dir: data/synthetic
+  data_base_dir: data/real
   inertia_groups:
-  - id: test_inertia
-    folder: 0.100kgm2
-    inertia: 0.1
-  target_name: tau_measured
-  gyro_axis_for_ang_vel: Gyro_Z
-  accel_axis_for_torque: Acc_Y
-  batch_size: 32
-  num_workers: 4
-  seed: ${seed}
+  - id: pos_A_300g
+    folder: new_pos_A_300g_data
+  - id: pos_C_300g
+    folder: new_pos_C_300g_data
+  - id: pos_D_300g
+    folder: new_pos_D_300_g_data
+  - id: pos_E_300g
+    folder: new_pos_E_300g_data
+  - id: no_mass
+    folder: new_no_mass_data
   global_train_ratio: 0.7
   global_val_ratio: 0.15
-  radius_accel: 0.2
-  filter_cutoff_freq_hz: null
-  filter_order: 4
-  sequence_duration_s: 0.5
+  batch_size: 256
+  num_workers: 4
+  radius_accel: 0.03
+  filter_cutoff_freq_hz: 30.0
+  filter_order: 6
+  sequence_duration_s: 1.0
+  resampling_frequency_hz: 240.0
+  max_torque_nm: 3.6
+  sensor_biases:
+    acc_y_bias: 0.039204
+    gyro_z_bias: -0.002273
+  max_commanded_vel: 10.0
 model:
   model_type:
     name: gru
@@ -37,12 +46,12 @@ model:
   weight_decay: 1.0e-06
   warmup_epochs: 1
   use_residual: false
-  k_spring: 0.0
+  k_spring: 0.1
   theta0: 0.0
-  kp_phys: 0.0
-  kd_phys: 0.0
-  pd_stall_torque_phys_training: null
-  pd_no_load_speed_phys_training: null
+  kp_phys: 4.0
+  kd_phys: 0.04
+  pd_stall_torque_phys_training: 1.8
+  pd_no_load_speed_phys_training: 30.0
   loss_diff_weight: 0.1
   gru_hidden_dim: 128
   gru_num_layers: 2
@@ -67,7 +76,7 @@ train:
     active: true
     monitor: val_rmse_epoch
     mode: min
-    patience: 20
+    patience: 10
     min_delta: 0.0001
     verbose: true
     stopping_threshold: null

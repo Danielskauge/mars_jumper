@@ -69,6 +69,45 @@ def _apply_kernel(values: torch.Tensor, kernel: Kernel, scale: float = 1.0, delt
 # =================================================================================
 # Reward Functions
 # =================================================================================
+
+
+def is_alive(env: ManagerBasedRLEnv,
+             phases: list[Phase] = [Phase.TAKEOFF, Phase.FLIGHT, Phase.LANDING]) -> torch.Tensor:
+    
+    active_mask = _get_active_envs_mask(env, phases)
+    reward_tensor = _init_reward_tensor(env)
+    
+    if not torch.any(active_mask):
+        return reward_tensor
+    
+    reward_tensor[active_mask] = float(1.0)
+    
+    return reward_tensor
+             
+
+def joint_torques_threshold_linear(env: ManagerBasedRLEnv,
+                                   phases: list[Phase] = [Phase.TAKEOFF, Phase.FLIGHT, Phase.LANDING],
+                                   asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+                                   threshold: float = 0.0) -> torch.Tensor:
+    """Penalize joint torques above a threshold linearly.
+
+    Only torques exceeding the threshold contribute, and penalty is (|torque|-threshold) summed over joints.
+    """
+
+    active_mask = _get_active_envs_mask(env, phases)
+    reward_tensor = _init_reward_tensor(env)
+    
+    if not torch.any(active_mask):
+        return reward_tensor
+    
+    asset: Articulation = env.scene[asset_cfg.name]
+    torques = torch.abs(asset.data.applied_torque[:, asset_cfg.joint_ids])
+    excess = torch.clamp(torques - threshold, min=0.0)
+    # Sum only over active environments to match mask length
+    reward_tensor[active_mask] = torch.sum(excess[active_mask], dim=1)
+    
+    return reward_tensor
+
     
 def shifted_huber_kernel(e, delta, e_max):
     """

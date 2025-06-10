@@ -63,6 +63,15 @@ class GruActuator(DCMotor):
 
         self.use_residual_model = hydra_config.get("use_residual", False)
 
+        # Load training resampling frequency from Hydra config
+        try:
+            self.training_frequency_hz: float = hydra_config_data.get("data", {}).get("resampling_frequency_hz")
+            if self.training_frequency_hz is None:
+                raise ValueError("`resampling_frequency_hz` not found under 'data' in Hydra config.")
+            print(f"Training resampling frequency: {self.training_frequency_hz} Hz")
+        except Exception as e:
+            raise ValueError(f"Error loading training frequency from Hydra config: {e}")
+
         # --- Read GRU architecture from hydra config if present ---
         summary_gru_num_layers = hydra_config.get("gru_num_layers")
         summary_gru_hidden_dim = hydra_config.get("gru_hidden_dim")
@@ -170,6 +179,8 @@ class GruActuator(DCMotor):
             hidden_dim, 
             device=self._device
         )
+        # Add buffer for previous torque to include in GRU input
+        self.prev_torque = torch.zeros(self._num_envs, self.num_joints, device=self._device)
         # self.sea_hidden_state_per_env view is removed as direct indexing to sea_hidden_state will be used for reset.
 
         # History buffers are no longer needed for constructing GRU input sequence, as GRU is now stateful over single steps.
@@ -193,6 +204,7 @@ class GruActuator(DCMotor):
         # Full reset if no selector provided
         if env_ids is None:
             self.sea_hidden_state.zero_()
+            self.prev_torque.zero_()
             return
         # Build tensor of environment indices to reset
         if isinstance(env_ids, slice):
@@ -212,6 +224,8 @@ class GruActuator(DCMotor):
         with torch.no_grad():
             if resolved.numel() > 0:
                 self.sea_hidden_state[:, resolved, :] = 0.0
+                # Reset previous torque buffer for these environments
+                self.prev_torque[env_indices, :] = 0.0
 
     def _apply_pd_torque_speed_curve(self, pd_joint_torque: torch.Tensor, joint_vel: torch.Tensor) -> torch.Tensor:
         """
@@ -224,37 +238,42 @@ class GruActuator(DCMotor):
             
         stall_torque = self._pd_stall_torque
         no_load_speed = self._pd_no_load_speed
-        
-        vel_ratio = joint_vel.abs() / no_load_speed 
-        torque_multiplier = torch.clip(1.0 - vel_ratio, min=0.0, max=1.0)
-        max_torque_in_vel_direction = stall_torque * torque_multiplier
 
+        # Convert stall torque to tensor for clipping
+        stall_tensor = pd_joint_torque.new_tensor(stall_torque)
+
+        # Calculate torque multiplier within [0, 1]
+        vel_ratio = joint_vel.abs() / no_load_speed
+        torque_multiplier = torch.clip(1.0 - vel_ratio, min=0.0, max=1.0)
+        max_torque_in_vel_direction = stall_tensor * torque_multiplier
+
+        # Clone original torque for saturation
         saturated_torque = pd_joint_torque.clone()
 
         positive_vel_mask = joint_vel > 0
         if torch.any(positive_vel_mask):
-            saturated_torque[positive_vel_mask] = torch.clip(
-                pd_joint_torque[positive_vel_mask],
-                min=-stall_torque,
-                max=max_torque_in_vel_direction[positive_vel_mask]
-            )
+            pos_vals = pd_joint_torque[positive_vel_mask]
+            pos_max = max_torque_in_vel_direction[positive_vel_mask]
+            pos_min = -stall_tensor
+            saturated = torch.clip(pos_vals, pos_min, pos_max)
+            saturated_torque[positive_vel_mask] = saturated
 
         negative_vel_mask = joint_vel < 0
         if torch.any(negative_vel_mask):
-            saturated_torque[negative_vel_mask] = torch.clip(
-                pd_joint_torque[negative_vel_mask],
-                min=-max_torque_in_vel_direction[negative_vel_mask], 
-                max=stall_torque 
-            )
-        
+            neg_vals = pd_joint_torque[negative_vel_mask]
+            neg_min = -max_torque_in_vel_direction[negative_vel_mask]
+            neg_max = stall_tensor
+            saturated = torch.clip(neg_vals, neg_min, neg_max)
+            saturated_torque[negative_vel_mask] = saturated
+
         zero_vel_mask = joint_vel == 0
         if torch.any(zero_vel_mask):
-            saturated_torque[zero_vel_mask] = torch.clip(
-                pd_joint_torque[zero_vel_mask],
-                min=-stall_torque,
-                max=stall_torque
-            )
-            
+            zero_vals = pd_joint_torque[zero_vel_mask]
+            zero_min = -stall_tensor
+            zero_max = stall_tensor
+            saturated = torch.clip(zero_vals, zero_min, zero_max)
+            saturated_torque[zero_vel_mask] = saturated
+
         return saturated_torque
     
     def _compute_analytical_torque(self, joint_pos: torch.Tensor, joint_vel: torch.Tensor, target_pos: torch.Tensor) -> torch.Tensor:
@@ -271,7 +290,7 @@ class GruActuator(DCMotor):
         
         spring_torque_component = torch.zeros_like(joint_pos)
         if self._use_internal_spring_for_residual_basis:
-            spring_torque_component = self._k_spring_actual * (joint_pos - self._theta0_actual)
+            spring_torque_component = - self._k_spring_actual * (joint_pos - self._theta0_actual)
         
         analytical_torque = pd_torque + spring_torque_component
         return analytical_torque
@@ -286,9 +305,11 @@ class GruActuator(DCMotor):
         current_angle_flat = joint_pos.flatten()
         target_angle_flat = target_pos.flatten()
         current_ang_vel_flat = joint_vel.flatten()
+        # Include previous torque as input feature
+        prev_torque_flat = self.prev_torque.flatten()
         
         current_step_features_flat = torch.stack(
-            [current_angle_flat, target_angle_flat, current_ang_vel_flat], dim=1
+            [current_angle_flat, target_angle_flat, current_ang_vel_flat, prev_torque_flat], dim=1
         )
         
         current_step_gru_input = current_step_features_flat.unsqueeze(1)
@@ -317,6 +338,8 @@ class GruActuator(DCMotor):
 
         self.computed_effort = combined_torque 
         self.applied_effort = self._clip_effort(self.computed_effort)
+        # Update previous torque buffer for next time step
+        self.prev_torque[:] = self.applied_effort
 
         output_actions = ArticulationActions(joint_efforts=self.applied_effort)
         return output_actions
